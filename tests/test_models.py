@@ -6,6 +6,8 @@ of these models is that a field they have never heard of does not break them.
 
 from datetime import date, datetime
 
+import pytest
+
 from livetennisapi.models import Fixture, Market, Match, Page, Player, Score
 
 
@@ -37,13 +39,10 @@ class TestForwardCompatibility:
         assert match.score is None
 
     def test_genuinely_absent_attribute_still_raises(self):
+        """Forward compatibility must not turn every typo into a silent None."""
         match = Match.from_dict({"id": 1})
-        try:
-            match.definitely_not_a_field
-        except AttributeError as exc:
-            assert "definitely_not_a_field" in str(exc)
-        else:  # pragma: no cover
-            raise AssertionError("expected AttributeError")
+        with pytest.raises(AttributeError, match="definitely_not_a_field"):
+            _ = match.definitely_not_a_field
 
     def test_none_in_none_out(self):
         assert Match.from_dict(None) is None
