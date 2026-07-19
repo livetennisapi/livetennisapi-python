@@ -52,6 +52,12 @@ __all__ = ["LiveScoreStream", "ScoreUpdate"]
 #: The server's subscribe timeout. Subscribing later than this drops the socket.
 _SUBSCRIBE_TIMEOUT_S = 15.0
 
+#: How long a connection must stay up before it counts as healthy enough to
+#: reset the backoff. Resetting on a successful subscribe alone lets a flapping
+#: server (accept -> ack -> drop) pin the delay at step one forever, so the
+#: backoff never grows and ``max_reconnect_attempts`` is never reached.
+_HEALTHY_UPTIME_S = 60.0
+
 #: Error codes the server sends that reconnecting will never resolve.
 _FATAL = {
     "unauthorized": Unauthorized,
@@ -155,26 +161,34 @@ class LiveScoreStream(_BaseClient):
         except Exception as exc:
             raise APIConnectionError(f"could not open the live feed: {exc}") from exc
 
-        # The server drops the socket if the subscribe frame is late, so send
-        # it immediately. 'action' is included for forward compatibility; the
-        # server keys off 'topics'.
-        ws.send(json.dumps({"action": "subscribe", "topics": self.topics}))
+        # Everything from here must close the socket on the way out: recv can
+        # raise TimeoutError or ConnectionClosed, and an escaping exception
+        # would leak one socket per reconnect attempt, forever.
+        try:
+            # The server drops the socket if the subscribe frame is late, so
+            # send it immediately. 'action' is included for forward
+            # compatibility; the server keys off 'topics'.
+            ws.send(json.dumps({"action": "subscribe", "topics": self.topics}))
 
-        deadline = time.monotonic() + _SUBSCRIBE_TIMEOUT_S
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            deadline = time.monotonic() + _SUBSCRIBE_TIMEOUT_S
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise APIConnectionError("timed out waiting for the subscribe acknowledgement")
+                frame = self._decode_frame(ws.recv(timeout=remaining))
+                if frame is None:
+                    continue
+                kind = frame.get("type")
+                if kind == "subscribed":
+                    return ws
+                if kind == "error":
+                    self._raise_frame_error(frame)
+        except BaseException:
+            try:
                 ws.close()
-                raise APIConnectionError("timed out waiting for the subscribe acknowledgement")
-            frame = self._decode_frame(ws.recv(timeout=remaining))
-            if frame is None:
-                continue
-            kind = frame.get("type")
-            if kind == "subscribed":
-                return ws
-            if kind == "error":
-                ws.close()
-                self._raise_frame_error(frame)
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     def _decode_frame(message: Any) -> dict[str, Any] | None:
@@ -210,9 +224,10 @@ class LiveScoreStream(_BaseClient):
         """Yield score updates until the stream is closed."""
         attempt = 0
         while not self._closed:
+            connected_at: float | None = None
             try:
                 self._ws = self._connect()
-                attempt = 0  # a successful connect resets the backoff
+                connected_at = time.monotonic()
 
                 for message in self._ws:
                     if self._closed:
@@ -247,6 +262,12 @@ class LiveScoreStream(_BaseClient):
 
             if self._closed or not self.auto_reconnect:
                 return
+
+            # Only a connection that STAYED up resets the backoff. See
+            # _HEALTHY_UPTIME_S: a server that accepts then immediately drops
+            # would otherwise hold the delay at step one indefinitely.
+            if connected_at is not None and (time.monotonic() - connected_at) >= _HEALTHY_UPTIME_S:
+                attempt = 0
 
             attempt += 1
             if self.max_reconnect_attempts and attempt > self.max_reconnect_attempts:

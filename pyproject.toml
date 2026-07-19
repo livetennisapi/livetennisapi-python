@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "livetennisapi"
-version = "1.0.0"
+version = "1.0.1"
 description = "Official Python client for the Live Tennis API — real-time tennis scores, players, market prices and model win-probability over REST and WebSocket."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -82,6 +82,9 @@ markers = [
 ]
 
 [tool.mypy]
-python_version = "3.9"
+# No `python_version` pin: mypy >= 1.18 refuses to run with a target below
+# 3.10, while this package genuinely supports 3.9. Ruff's target-version
+# already enforces 3.9-compatible syntax, so pinning here bought nothing and
+# broke the tool.
 warn_unused_ignores = true
 ignore_missing_imports = true

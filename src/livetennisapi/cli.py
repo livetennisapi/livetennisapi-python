@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from itertools import zip_longest
 from typing import Any
 
 from . import __version__
@@ -77,7 +78,9 @@ def _format_score(score: Any) -> str:
     games = getattr(score, "games", None) or []
     parts: list[str] = []
     if len(games) >= 2 and isinstance(games[0], list) and isinstance(games[1], list):
-        for a, b in zip(games[0], games[1]):
+        # zip_longest, not zip: a set in progress can leave one side shorter,
+        # and zip() would silently drop the set currently being played.
+        for a, b in zip_longest(games[0], games[1], fillvalue="-"):
             parts.append(f"{a}-{b}")
     elif getattr(score, "sets", None):
         sets = score.sets or []
@@ -105,14 +108,24 @@ def _server_mark(score: Any, side: int) -> str:
 # -- commands -----------------------------------------------------------------
 
 
-def _cmd_health(client: LiveTennisAPI, args: argparse.Namespace) -> int:
-    data = client.health()
-    _out(json.dumps(data, indent=2))
+def _emit_json(payload) -> int:
+    """Print a model, page or dict as JSON."""
+    if hasattr(payload, "to_dict"):
+        payload = payload.to_dict()
+    elif hasattr(payload, "raw"):
+        payload = payload.raw
+    _out(json.dumps(payload, indent=2, default=str))
     return 0
+
+
+def _cmd_health(client: LiveTennisAPI, args: argparse.Namespace) -> int:
+    return _emit_json(client.health())
 
 
 def _cmd_live(client: LiveTennisAPI, args: argparse.Namespace) -> int:
     page = client.list_matches(status=args.status, limit=args.limit)
+    if args.json:
+        return _emit_json(page)
     rows = []
     for m in page:
         n1, n2 = _names(m)
@@ -182,6 +195,8 @@ def _cmd_score(client: LiveTennisAPI, args: argparse.Namespace) -> int:
 
 def _cmd_players(client: LiveTennisAPI, args: argparse.Namespace) -> int:
     page = client.search_players(args.query, limit=args.limit)
+    if args.json:
+        return _emit_json(page)
     rows = [
         [p.id or "-", p.name or "-", p.country or "-", p.ranking if p.ranking is not None else "-", p.tour or "-"]
         for p in page
@@ -192,6 +207,8 @@ def _cmd_players(client: LiveTennisAPI, args: argparse.Namespace) -> int:
 
 def _cmd_fixtures(client: LiveTennisAPI, args: argparse.Namespace) -> int:
     page = client.list_fixtures(limit=args.limit)
+    if args.json:
+        return _emit_json(page)
     rows = [
         [
             f.event_date or "-",
@@ -207,6 +224,8 @@ def _cmd_fixtures(client: LiveTennisAPI, args: argparse.Namespace) -> int:
 
 def _cmd_history(client: LiveTennisAPI, args: argparse.Namespace) -> int:
     page = client.list_completed_matches(limit=args.limit)
+    if args.json:
+        return _emit_json(page)
     rows = []
     for m in page:
         n1, n2 = _names(m)
@@ -249,38 +268,44 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=None, help="override the API base URL")
     parser.add_argument("--json", action="store_true", help="emit raw JSON instead of a table")
 
+    # --json is added to every subparser as well as the top level, so both
+    # `livetennis --json live` and `livetennis live --json` work. argparse does
+    # not inherit top-level optionals into subcommands.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="emit raw JSON instead of a table")
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("health", help="liveness probe (no key needed)")
+    p = sub.add_parser("health", parents=[common], help="liveness probe (no key needed)")
     p.set_defaults(func=_cmd_health)
 
-    p = sub.add_parser("live", help="matches by status")
+    p = sub.add_parser("live", parents=[common], help="matches by status")
     p.add_argument("--status", default="live", choices=["live", "upcoming", "completed"])
     p.add_argument("--limit", type=int, default=50)
     p.set_defaults(func=_cmd_live)
 
-    p = sub.add_parser("match", help="full detail for one match")
+    p = sub.add_parser("match", parents=[common], help="full detail for one match")
     p.add_argument("match_id", type=int)
     p.set_defaults(func=_cmd_match)
 
-    p = sub.add_parser("score", help="current score for one match")
+    p = sub.add_parser("score", parents=[common], help="current score for one match")
     p.add_argument("match_id", type=int)
     p.set_defaults(func=_cmd_score)
 
-    p = sub.add_parser("players", help="search players by name")
+    p = sub.add_parser("players", parents=[common], help="search players by name")
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=25)
     p.set_defaults(func=_cmd_players)
 
-    p = sub.add_parser("fixtures", help="upcoming scheduled fixtures")
+    p = sub.add_parser("fixtures", parents=[common], help="upcoming scheduled fixtures")
     p.add_argument("--limit", type=int, default=25)
     p.set_defaults(func=_cmd_fixtures)
 
-    p = sub.add_parser("history", help="recently completed matches")
+    p = sub.add_parser("history", parents=[common], help="recently completed matches")
     p.add_argument("--limit", type=int, default=25)
     p.set_defaults(func=_cmd_history)
 
-    p = sub.add_parser("watch", help="stream live scores over WebSocket (ULTRA)")
+    p = sub.add_parser("watch", parents=[common], help="stream live scores over WebSocket (ULTRA)")
     p.add_argument("--match", type=int, default=None, help="watch one match instead of all")
     p.set_defaults(func=_cmd_watch)
 

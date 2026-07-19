@@ -114,7 +114,8 @@ an unentitled tier cannot start working, and retrying only burns rate limit.
 
 ## Pagination
 
-`limit` defaults to 50 and caps at 200. To walk everything:
+`limit` defaults to 50; the API rejects anything above 200. To walk everything —
+`paginate()` clamps the page size for you:
 
 ```python
 for player in client.paginate("search_players", search="nadal"):
@@ -128,7 +129,7 @@ field it doesn't recognise. Unknown fields stay reachable:
 
 ```python
 match = client.get_match(18953)
-match.raw["some_new_field"]   # always present
+match.raw["some_new_field"]   # present if the server sent it
 match.some_new_field          # also works
 ```
 
@@ -171,7 +172,7 @@ Issues and pull requests welcome at
 
 ```bash
 pip install -e ".[dev]"
-pytest                                    # unit tests, no key needed
+pytest -m "not contract"                  # unit tests, offline
 LIVETENNISAPI_KEY=twjp_… pytest -m contract   # verify against the live API
 ```
 
