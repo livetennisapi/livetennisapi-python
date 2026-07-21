@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] — 2026-07-21
+
+### Fixed
+- **A 403 on `list_completed_matches()` could not be attributed to a tier.**
+  `/history/matches` used to be the entitlement floor, so nothing needed to name
+  a tier for it. With the new FREE tier below it, a free key calling that method
+  got an `UpgradeRequired` with no `required_tier`, leaving the caller with the
+  API's bare `upgrade_required` and no idea which plan to buy. `/history` now
+  maps to `BASIC`.
+
 ## [1.0.1] — 2026-07-19
 
 ### Fixed
