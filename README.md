@@ -13,7 +13,7 @@ win-probability — for ATP, WTA, Challenger and ITF, over REST and WebSocket.
 [![Python](https://img.shields.io/pypi/pyversions/livetennisapi.svg)](https://pypi.org/project/livetennisapi/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[**Documentation**](https://docs.livetennisapi.com) · [**Get an API key**](https://livetennisapi.com/#pricing)
+[**Documentation**](https://docs.livetennisapi.com) · [**Get a free API key**](https://livetennisapi.com/subscribe/free)
 
 </div>
 
@@ -77,12 +77,13 @@ than retry forever.
 
 ## Tiers
 
-| | BASIC | PRO | ULTRA |
-|---|:--:|:--:|:--:|
-| `list_matches` `get_match` `get_match_score` | ✅ | ✅ | ✅ |
-| `search_players` `get_player` `list_fixtures` `list_completed_matches` | ✅ | ✅ | ✅ |
-| `list_match_events` `list_markets` `get_market_prices` | — | ✅ | ✅ |
-| `get_match_analysis`, `win_probability_p1` / `danger`, WebSocket | — | — | ✅ |
+| | FREE | BASIC | PRO | ULTRA |
+|---|:--:|:--:|:--:|:--:|
+| `list_matches` `get_match` `get_match_score` | ✅ | ✅ | ✅ | ✅ |
+| `search_players` `get_player` `list_fixtures` | ✅ | ✅ | ✅ | ✅ |
+| `list_completed_matches` (history) | — | ✅ | ✅ | ✅ |
+| `list_match_events` `list_markets` `get_market_prices` | — | — | ✅ | ✅ |
+| `get_match_analysis`, `win_probability_p1` / `danger`, WebSocket | — | — | — | ✅ |
 
 Calling above your tier raises `UpgradeRequired`, which tells you which tier you need:
 
