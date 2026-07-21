@@ -110,6 +110,16 @@ class TestErrorMapping:
             client.list_markets(1)
         assert exc.value.required_tier == "PRO"
 
+    def test_upgrade_required_names_basic_for_history(self):
+        """FREE stops short of /history/matches, so a free key hitting it must be
+        told BASIC rather than left with the API's bare ``upgrade_required``."""
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_completed_matches()
+        assert exc.value.required_tier == "BASIC"
+
     def test_rate_limited_exposes_retry_after(self):
         client = client_returning(
             httpx.Response(429, json={"error": "rate_limited"}, headers={"Retry-After": "12"}),

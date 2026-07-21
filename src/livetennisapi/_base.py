@@ -19,12 +19,14 @@ DEFAULT_BASE_URL = "https://api.livetennisapi.com/api/public/v1"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 2
 
-#: Endpoints that need more than BASIC, so a 403 can say which tier is needed
-#: rather than surfacing the API's bare ``{"error": "upgrade_required"}``.
+#: Endpoints that need more than the FREE floor, so a 403 can say which tier
+#: is needed rather than surfacing the API's bare
+#: ``{"error": "upgrade_required"}``. First matching marker wins.
 _TIER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("/analysis", "ULTRA"),
     ("/events", "PRO"),
     ("/markets", "PRO"),
+    ("/history", "BASIC"),
 )
 
 
