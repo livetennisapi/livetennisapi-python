@@ -15,7 +15,7 @@ Documentation: https://docs.livetennisapi.com
 
 from __future__ import annotations
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 from .client import AsyncLiveTennisAPI, LiveTennisAPI
 from .errors import (
@@ -77,12 +77,17 @@ __all__ = [
     # WebSocket (lazily imported so `websockets` stays optional)
     "LiveScoreStream",
     "ScoreUpdate",
+    "BreakPoint",
+    "BreakPointResult",
+    "StreamFrame",
 ]
+
+_WS_EXPORTS = ("LiveScoreStream", "ScoreUpdate", "BreakPoint", "BreakPointResult", "StreamFrame")
 
 
 def __getattr__(name: str):
     """Expose the WebSocket client lazily so ``websockets`` stays optional."""
-    if name in ("LiveScoreStream", "ScoreUpdate"):
+    if name in _WS_EXPORTS:
         from . import ws
 
         return getattr(ws, name)

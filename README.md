@@ -75,6 +75,30 @@ internally, so you only see real score changes. It deliberately does **not**
 reconnect on a bad key or an insufficient tier — those raise immediately rather
 than retry forever.
 
+### Break-point signals
+
+Opt in with `signals=["break_point"]` to also receive the headline break-point
+feed. The stream then yields a `BreakPoint` the moment a break point arises and a
+`BreakPointResult` when it resolves, alongside the usual `ScoreUpdate`:
+
+```python
+from livetennisapi import LiveScoreStream, ScoreUpdate, BreakPoint, BreakPointResult
+
+with LiveScoreStream(signals=["break_point"]) as stream:
+    for frame in stream:
+        if isinstance(frame, BreakPoint):
+            print(f"BREAK POINT on match {frame.match_id}: "
+                  f"p{frame.returner} has {frame.break_points} vs server p{frame.server}")
+        elif isinstance(frame, BreakPointResult):
+            print(f"  -> {frame.outcome} (p1 win prob now {frame.win_probability_p1_after})")
+        elif isinstance(frame, ScoreUpdate):
+            print(frame.match_id, frame.score.sets)
+```
+
+With no `signals` the stream behaves exactly as before — score frames only.
+Both the feed and the model fields are ULTRA-only. A runnable example lives in
+[`livetennisapi-starter-python`](https://github.com/livetennisapi/livetennisapi-starter-python).
+
 ## Tiers
 
 | | FREE | BASIC | PRO | ULTRA |

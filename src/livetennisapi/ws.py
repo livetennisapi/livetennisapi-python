@@ -15,6 +15,16 @@ Topics
 ``live-scores``   every live match
 ``match:<id>``    one specific match
 
+Signals (opt-in, ULTRA)
+-----------------------
+Pass ``signals=["break_point"]`` to also receive the headline break-point
+feed: a ``break_point`` frame the instant a break point arises and a
+``break_point_result`` frame when it resolves. These are yielded as
+:class:`BreakPoint` and :class:`BreakPointResult` objects alongside the usual
+:class:`ScoreUpdate`; switch on the object type (or its ``.type`` field) to tell
+them apart. With no ``signals`` the stream behaves exactly as before — score
+frames only.
+
 Reconnection
 ------------
 The stream reconnects automatically with exponential backoff and re-subscribes
@@ -34,7 +44,8 @@ import random
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, ClassVar, Union
 from urllib.parse import urlencode, urlparse, urlunparse
 
 from ._base import _BaseClient
@@ -47,7 +58,7 @@ from .errors import (
 )
 from .models import Model, Score
 
-__all__ = ["LiveScoreStream", "ScoreUpdate"]
+__all__ = ["BreakPoint", "BreakPointResult", "LiveScoreStream", "ScoreUpdate", "StreamFrame"]
 
 #: The server's subscribe timeout. Subscribing later than this drops the socket.
 _SUBSCRIBE_TIMEOUT_S = 15.0
@@ -84,6 +95,57 @@ class ScoreUpdate(Model):
         return obj
 
 
+@dataclass
+class BreakPoint(Model):
+    """One ``break_point`` frame — a break point is on the board (opt-in signal).
+
+    All fields sit inline on the frame; there is no nested score object. ``server``
+    is the player serving, ``returner`` the one holding the break point(s).
+    ``break_points`` is how many are live at once (1-3). ``prob_swing`` is the
+    same quantity the REST score calls ``danger``. Every field is ULTRA-only.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("ts",)
+
+    type: str | None = None
+    match_id: int | None = None
+    server: int | None = None
+    returner: int | None = None
+    break_points: int | None = None
+    set: int | None = None
+    game: int | None = None
+    point: str | None = None
+    win_probability_p1: float | None = None
+    prob_swing: float | None = None
+    server_side_favoured: bool | None = None
+    ts: datetime | None = None
+
+
+@dataclass
+class BreakPointResult(Model):
+    """One ``break_point_result`` frame — a break point just resolved.
+
+    ``outcome`` is ``"held"`` (server saved it) or ``"broken"`` (returner
+    converted). ``win_probability_p1_after`` is p1's win probability once the
+    game closed. Opt-in signal; ULTRA-only.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("ts",)
+
+    type: str | None = None
+    match_id: int | None = None
+    server: int | None = None
+    outcome: str | None = None
+    win_probability_p1_after: float | None = None
+    ts: datetime | None = None
+
+
+#: Any frame the stream may yield. ``score`` frames arrive always; the break
+#: frames only when their signal was requested. Switch on the concrete type or
+#: the ``.type`` field to tell them apart.
+StreamFrame = Union[ScoreUpdate, BreakPoint, BreakPointResult]
+
+
 class LiveScoreStream(_BaseClient):
     """A reconnecting subscription to the live-score feed."""
 
@@ -92,12 +154,16 @@ class LiveScoreStream(_BaseClient):
         api_key: str | None = None,
         *,
         topics: Sequence[str] = ("live-scores",),
+        signals: Sequence[str] = (),
         auto_reconnect: bool = True,
         max_reconnect_attempts: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(api_key, **kwargs)
         self.topics = list(topics) or ["live-scores"]
+        #: Opt-in signals to receive on top of score frames, e.g. ``break_point``.
+        #: Empty (the default) means score frames only — identical to before.
+        self.signals = [s for s in signals if s]
         self.auto_reconnect = auto_reconnect
         #: 0 means retry forever.
         self.max_reconnect_attempts = max(0, int(max_reconnect_attempts))
@@ -138,7 +204,7 @@ class LiveScoreStream(_BaseClient):
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    def __iter__(self) -> Iterator[ScoreUpdate]:
+    def __iter__(self) -> Iterator[StreamFrame]:
         return self.listen()
 
     # -- protocol -------------------------------------------------------------
@@ -166,9 +232,12 @@ class LiveScoreStream(_BaseClient):
         # would leak one socket per reconnect attempt, forever.
         try:
             # The server drops the socket if the subscribe frame is late, so
-            # send it immediately. 'action' is included for forward
-            # compatibility; the server keys off 'topics'.
-            ws.send(json.dumps({"action": "subscribe", "topics": self.topics}))
+            # send it immediately. The server keys off 'topics' (+ optional
+            # 'signals'); 'action' is ignored but kept for forward compatibility.
+            subscribe: dict[str, Any] = {"action": "subscribe", "topics": self.topics}
+            if self.signals:
+                subscribe["signals"] = self.signals
+            ws.send(json.dumps(subscribe))
 
             deadline = time.monotonic() + _SUBSCRIBE_TIMEOUT_S
             while True:
@@ -220,8 +289,14 @@ class LiveScoreStream(_BaseClient):
         hint = frame.get("hint")
         raise LiveTennisAPIError(f"live feed error: {code}" + (f" — {hint}" if hint else ""))
 
-    def listen(self) -> Iterator[ScoreUpdate]:
-        """Yield score updates until the stream is closed."""
+    def listen(self) -> Iterator[StreamFrame]:
+        """Yield stream frames until the stream is closed.
+
+        Score frames come as :class:`ScoreUpdate`. When ``signals`` requested
+        ``break_point``, break-point frames come as :class:`BreakPoint` and
+        :class:`BreakPointResult`. With no signals only :class:`ScoreUpdate` is
+        ever yielded, exactly as before.
+        """
         attempt = 0
         while not self._closed:
             connected_at: float | None = None
@@ -240,6 +315,14 @@ class LiveScoreStream(_BaseClient):
                         update = ScoreUpdate.from_dict(frame)
                         if update is not None:
                             yield update
+                    elif kind == "break_point":
+                        bp = BreakPoint.from_dict(frame)
+                        if bp is not None:
+                            yield bp
+                    elif kind == "break_point_result":
+                        bpr = BreakPointResult.from_dict(frame)
+                        if bpr is not None:
+                            yield bpr
                     elif kind == "error":
                         self._raise_frame_error(frame)
                     # 'ping' and 'subscribed' are protocol noise — swallow them.
