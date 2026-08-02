@@ -9,7 +9,7 @@ description = "Official Python client for the Live Tennis API — real-time tenn
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Live Tennis API", email = "support@livetennisapi.com" }]
+authors = [{ name = "Live Tennis API", email = "hello@livetennisapi.com" }]
 keywords = [
     "tennis", "tennis-api", "live-scores", "sports", "sports-api",
     "sports-data", "atp", "wta", "itf", "odds", "api-client", "sdk",
