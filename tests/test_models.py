@@ -8,7 +8,19 @@ from datetime import date, datetime
 
 import pytest
 
-from livetennisapi.models import Fixture, Market, Match, Page, Player, Score
+from livetennisapi.models import (
+    ArchiveMatch,
+    ArchiveParticipant,
+    ArchivePlayerBio,
+    Fixture,
+    HeadToHead,
+    Market,
+    Match,
+    Page,
+    Player,
+    Score,
+    Tournament,
+)
 
 
 class TestForwardCompatibility:
@@ -146,6 +158,108 @@ class TestFixture:
     def test_event_date_is_parsed(self):
         fixture = Fixture.from_dict({"id": 1, "event_date": "2026-07-20"})
         assert isinstance(fixture.event_date, date)
+
+    def test_start_time_is_parsed_and_nullable(self):
+        # A date-only fixture is a real state: start_time stays None until the
+        # order of play assigns a time.
+        fixture = Fixture.from_dict({"id": 1, "start_time": "2026-08-03T11:00:00Z"})
+        assert isinstance(fixture.start_time, datetime)
+        assert Fixture.from_dict({"id": 1, "start_time": None}).start_time is None
+
+    def test_player_ids_and_round_code(self):
+        fixture = Fixture.from_dict({"id": 1, "player1_id": 925, "player2_id": None, "round_code": "QF"})
+        assert fixture.player1_id == 925
+        assert fixture.player2_id is None
+        assert fixture.round_code == "QF"
+
+
+class TestMatchNewFields:
+    def test_tour_and_tournament_id(self):
+        match = Match.from_dict({"id": 1, "tour": "itf", "tournament_id": "itf-m15-wuning"})
+        assert match.tour == "itf"
+        assert match.tournament_id == "itf-m15-wuning"
+
+    def test_round_code_and_withdrew(self):
+        match = Match.from_dict(
+            {"id": 1, "round_code": "R16", "event_status": "Retired", "winner": 2, "withdrew": 1}
+        )
+        assert match.round_code == "R16"
+        assert match.withdrew == 1
+
+    def test_withdrew_absent_means_none(self):
+        # Absent means "not a withdrawal, or no evidence" — never a guess.
+        assert Match.from_dict({"id": 1}).withdrew is None
+
+
+class TestTournament:
+    def test_fields(self):
+        t = Tournament.from_dict(
+            {"id": "atp-wimbledon", "name": "Wimbledon", "tour": "atp", "surface": "grass",
+             "indoor": False, "city": "London", "country": "GB", "category": "grand_slam"}
+        )
+        assert t.id == "atp-wimbledon"
+        assert t.category == "grand_slam"
+
+    def test_uncurated_location_is_none(self):
+        t = Tournament.from_dict({"id": "x", "name": "Y", "city": None, "country": None, "category": None})
+        assert t.city is None
+        assert t.category is None
+
+
+class TestArchiveMatch:
+    def test_winner_and_loser_become_participants(self):
+        m = ArchiveMatch.from_dict(
+            {
+                "id": 1, "tour": "atp", "event_date": "1980-06-23", "round": "F",
+                "winner": {"name": "Bjorn Borg", "rank": 1, "player_id": 100437, "entry": None},
+                "loser": {"name": "John McEnroe", "rank": 2, "player_id": 100581, "seed": 2},
+                "score": "1-6 7-5 6-3 6-7(16) 8-6", "outcome": "completed",
+            }
+        )
+        assert isinstance(m.winner, ArchiveParticipant)
+        assert m.winner.name == "Bjorn Borg"
+        assert m.loser.player_id == 100581
+        assert isinstance(m.event_date, date)
+
+    def test_pre_1991_stats_stay_none(self):
+        # The corpus records serve stats from 1991; the None is honest.
+        m = ArchiveMatch.from_dict({"id": 1, "event_date": "1975-01-01", "stats": None})
+        assert m.stats is None
+
+
+class TestArchivePlayerBio:
+    def test_dates_are_parsed(self):
+        bio = ArchivePlayerBio.from_dict(
+            {"id": 100437, "tour": "atp", "name": "Bjorn Borg", "dob": "1956-06-06",
+             "career_high_rank": 1, "career_high_date": "1977-08-23"}
+        )
+        assert isinstance(bio.dob, date)
+        assert isinstance(bio.career_high_date, date)
+        assert bio.career_high_rank == 1
+
+    def test_the_eras_silence_is_none(self):
+        bio = ArchivePlayerBio.from_dict({"id": 1, "tour": "wta", "hand": None, "height_cm": None})
+        assert bio.hand is None
+        assert bio.height_cm is None
+
+
+class TestHeadToHead:
+    def test_shape(self):
+        h2h = HeadToHead.from_dict(
+            {
+                "players": {"p1": {"name": "Roger Federer"}, "p2": {"name": "Rafael Nadal"}},
+                "totals": {"p1_wins": 16, "p2_wins": 24, "meetings": 40, "undecided": 0},
+                "by_surface": {"clay": {"p1": 2, "p2": 14}},
+                "meetings": [{"era": "current", "match_id": 18453, "winner": 2, "outcome": "completed"}],
+            }
+        )
+        assert h2h.totals["p2_wins"] == 24
+        assert h2h.meetings[0]["era"] == "current"
+
+    def test_no_match_is_an_empty_record_not_a_crash(self):
+        h2h = HeadToHead.from_dict({"players": None, "totals": {"meetings": 0}})
+        assert h2h.players is None
+        assert h2h.meetings == []
 
 
 class TestPage:
