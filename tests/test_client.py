@@ -120,6 +120,38 @@ class TestErrorMapping:
             client.list_completed_matches()
         assert exc.value.required_tier == "BASIC"
 
+    def test_upgrade_required_names_basic_for_the_results_archive(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_archive_matches(name="borg")
+        assert exc.value.required_tier == "BASIC"
+
+    def test_upgrade_required_names_basic_for_h2h(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.get_h2h("federer", "nadal")
+        assert exc.value.required_tier == "BASIC"
+
+    def test_ambiguous_name_candidates_stay_reachable(self):
+        """/h2h and /history/archive/career refuse a fragment matching more than
+        one player — the candidate list must survive onto the exception so the
+        caller can disambiguate instead of guessing."""
+        client = client_returning(
+            httpx.Response(
+                400,
+                json={"error": "ambiguous_name", "candidates": ["Serena Williams", "Venus Williams"]},
+            ),
+            max_retries=0,
+        )
+        with pytest.raises(BadRequest) as exc:
+            client.get_h2h("williams", "sharapova")
+        assert exc.value.error_code == "ambiguous_name"
+        assert "Venus Williams" in exc.value.body["candidates"]
+
     def test_rate_limited_exposes_retry_after(self):
         client = client_returning(
             httpx.Response(429, json={"error": "rate_limited"}, headers={"Retry-After": "12"}),
@@ -228,6 +260,67 @@ class TestRequests:
         client.get_match_score(18953)
         assert str(client.requests[0].url).startswith(f"{BASE}/matches/18953/score")
 
+    def test_player_filter_is_repeated_not_comma_joined(self):
+        # The API reads `?player=1&player=2`; `player=1,2` is a 400.
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_matches(player=[925, 1137])
+        assert client.requests[0].url.params.get_list("player") == ["925", "1137"]
+
+    def test_single_player_id_needs_no_list(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_matches(player=925)
+        assert client.requests[0].url.params["player"] == "925"
+
+    def test_date_bounds_map_to_from_and_to(self):
+        # `from` is a Python keyword, so the argument is `from_` — but the wire
+        # parameter must stay `from`.
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_matches(from_="2026-07-01", to="2026-07-31", country="ned")
+        params = client.requests[0].url.params
+        assert params["from"] == "2026-07-01"
+        assert params["to"] == "2026-07-31"
+        assert params["country"] == "ned"
+        assert "from_" not in params
+
+    def test_history_filters_pass_through(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_completed_matches(tour="itf", player=925, coverage="from_start")
+        params = client.requests[0].url.params
+        assert params["tour"] == "itf"
+        assert params["player"] == "925"
+        assert params["coverage"] == "from_start"
+
+    def test_tournament_paths(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_tournaments("wimbledon", tour="atp")
+        assert str(client.requests[0].url).startswith(f"{BASE}/tournaments?")
+        assert client.requests[0].url.params["search"] == "wimbledon"
+        client.get_tournament("atp-wimbledon")
+        assert str(client.requests[1].url).startswith(f"{BASE}/tournaments/atp-wimbledon")
+
+    def test_archive_paths_and_filters(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_archive_matches(tour="atp", name="borg", round="F", level="G", from_="1976-01-01")
+        assert str(client.requests[0].url).startswith(f"{BASE}/history/archive/matches?")
+        params = client.requests[0].url.params
+        assert params["name"] == "borg"
+        assert params["round"] == "F"
+        assert params["level"] == "G"
+        assert params["from"] == "1976-01-01"
+        client.get_archive_match(123456)
+        assert str(client.requests[1].url).startswith(f"{BASE}/history/archive/matches/123456")
+        client.list_archive_players("navratilova", tour="wta")
+        assert str(client.requests[2].url).startswith(f"{BASE}/history/archive/players?")
+        client.get_archive_career("borg")
+        assert str(client.requests[3].url).startswith(f"{BASE}/history/archive/career?name=borg")
+
+    def test_h2h_sends_both_names(self):
+        client = client_returning(httpx.Response(200, json={}))
+        client.get_h2h("federer", "nadal")
+        params = client.requests[0].url.params
+        assert params["p1"] == "federer"
+        assert params["p2"] == "nadal"
+
 
 class TestResponses:
     def test_list_response_is_parsed(self):
@@ -320,6 +413,9 @@ class TestParity:
             "list_match_events", "get_match_analysis", "search_players",
             "get_player", "list_markets", "get_market_prices",
             "list_completed_matches", "list_fixtures", "paginate",
+            "list_tournaments", "get_tournament",
+            "list_archive_matches", "get_archive_match",
+            "list_archive_players", "get_archive_career", "get_h2h",
         }
         for name in endpoints:
             assert hasattr(LiveTennisAPI, name), f"sync client missing {name}"

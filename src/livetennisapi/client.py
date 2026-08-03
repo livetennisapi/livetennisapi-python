@@ -23,7 +23,20 @@ import httpx
 
 from ._base import _BaseClient
 from .errors import APIConnectionError, APITimeoutError
-from .models import Event, Fixture, Market, Match, Page, Player, Score
+from .models import (
+    ArchiveCareer,
+    ArchiveMatch,
+    ArchivePlayerBio,
+    Event,
+    Fixture,
+    HeadToHead,
+    Market,
+    Match,
+    Page,
+    Player,
+    Score,
+    Tournament,
+)
 
 __all__ = ["LiveTennisAPI", "AsyncLiveTennisAPI"]
 
@@ -118,10 +131,47 @@ class LiveTennisAPI(_BaseClient):
         """Liveness probe. Needs no authentication."""
         return self._request("/health") or {}
 
-    def list_matches(self, status: str = "live", *, limit: int = 50, offset: int = 0) -> Page:
-        """Matches by lifecycle status: ``live``, ``upcoming`` or ``completed``."""
+    def list_matches(
+        self,
+        status: str = "live",
+        *,
+        tour: str | None = None,
+        player: int | list[int] | None = None,
+        country: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        """Matches by lifecycle status: ``live``, ``upcoming`` or ``completed``.
+
+        All filters are optional and AND-composed:
+
+        - ``player`` — matches where this player is EITHER participant. Pass a
+          list to union several ids (repeated on the wire, max 50).
+        - ``from_`` / ``to`` — play-date bounds, ``YYYY-MM-DD`` or ISO-8601
+          UTC. A bare date covers the whole UTC day.
+        - ``country`` — either participant's ``player.country`` equals this
+          lowercase 3-letter code. The vocabulary is what the Player object
+          returns — IOC-style codes (``ned``, ``sui``, ``gre``), NOT ISO-3166.
+          Players with no recorded country never match.
+        """
         return _page(
-            self._request("/matches", self._params({"status": status, "limit": limit, "offset": offset})),
+            self._request(
+                "/matches",
+                self._params(
+                    {
+                        "status": status,
+                        "tour": tour,
+                        "player": player,
+                        "country": country,
+                        "from": from_,
+                        "to": to,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
             Match,
         )
 
@@ -165,16 +215,165 @@ class LiveTennisAPI(_BaseClient):
         """Market with recent price ticks per side, newest first. **PRO.**"""
         return Market.from_dict(self._request(f"/markets/{match_id}/prices", self._params({"limit": limit})))
 
-    def list_completed_matches(self, *, limit: int = 50, offset: int = 0) -> Page:
-        """Completed matches, newest first, with a derived ``winner``."""
+    def list_completed_matches(
+        self,
+        *,
+        tour: str | None = None,
+        player: int | list[int] | None = None,
+        country: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        coverage: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        """Completed matches, newest first, with a derived ``winner``. **BASIC.**
+
+        Takes the same ``tour`` / ``player`` / ``country`` / ``from_`` / ``to``
+        filters as :meth:`list_matches`, plus ``coverage`` — keep only matches
+        whose tape has that coverage (``from_start`` | ``partial`` |
+        ``reconstructed`` | ``reconstructed_partial`` | ``none``). Note the
+        coverage filter is applied AFTER the page is cut, so a filtered page is
+        routinely shorter than ``limit`` (and may be empty) while later pages
+        still hold matching matches — a short filtered page is not an
+        end-of-data signal there.
+        """
         return _page(
-            self._request("/history/matches", self._params({"limit": limit, "offset": offset})),
+            self._request(
+                "/history/matches",
+                self._params(
+                    {
+                        "tour": tour,
+                        "player": player,
+                        "country": country,
+                        "from": from_,
+                        "to": to,
+                        "coverage": coverage,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
             Match,
         )
 
     def list_fixtures(self, *, limit: int = 50, offset: int = 0) -> Page:
         """Upcoming scheduled fixtures, earliest first."""
         return _page(self._request("/fixtures", self._params({"limit": limit, "offset": offset})), Fixture)
+
+    def list_tournaments(
+        self, search: str | None = None, *, tour: str | None = None, limit: int = 50, offset: int = 0
+    ) -> Page:
+        """Tournament catalogue, name order — the id space ``Match.tournament_id`` joins.
+
+        ``search`` is a case-insensitive substring match on the tournament name.
+        """
+        return _page(
+            self._request(
+                "/tournaments",
+                self._params({"search": search, "tour": tour, "limit": limit, "offset": offset}),
+            ),
+            Tournament,
+        )
+
+    def get_tournament(self, tournament_id: str) -> Tournament | None:
+        """One tournament by its stable id — the ``tournament_id`` carried on match objects."""
+        return Tournament.from_dict(self._request(f"/tournaments/{tournament_id}"))
+
+    def list_archive_matches(
+        self,
+        *,
+        tour: str | None = None,
+        name: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        round: str | None = None,
+        level: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        """The results archive (1968–2022), newest tournament first. **BASIC.**
+
+        Completed-match RESULTS from a licensed historical corpus — ATP and
+        WTA, main draws, qualifying and the ITF/futures tiers. Distinct from
+        the point-by-point tape (2023→now) served by
+        :meth:`list_completed_matches`: the archive ends exactly where the tape
+        begins, so no match is ever served from two datasets.
+
+        ``name`` matches EITHER player's name (case-insensitive substring, min
+        3 chars); ``from_`` / ``to`` bound the tournament START date — the only
+        date this era's records carry; ``round`` uses the controlled vocabulary
+        (``F`` ``SF`` ``QF`` ``R16`` … ``Q1``-``Q4``); ``level`` is the source
+        tier code (G, M, A, F, D, C, O, or a futures category code like "15").
+        """
+        return _page(
+            self._request(
+                "/history/archive/matches",
+                self._params(
+                    {
+                        "tour": tour,
+                        "name": name,
+                        "from": from_,
+                        "to": to,
+                        "round": round,
+                        "level": level,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
+            ArchiveMatch,
+        )
+
+    def get_archive_match(self, archive_id: int) -> ArchiveMatch | None:
+        """One results-archive record, with serve statistics where the era recorded them. **BASIC.**
+
+        ``stats`` is ``None`` for most rows before 1991 — that ``None`` is
+        honest, never synthesised.
+        """
+        return ArchiveMatch.from_dict(self._request(f"/history/archive/matches/{archive_id}"))
+
+    def list_archive_players(
+        self, name: str | None = None, *, tour: str | None = None, limit: int = 50, offset: int = 0
+    ) -> Page:
+        """The people of the results archive (1968–2022), ordered by name. **BASIC.**
+
+        Bios: hand, date of birth, country, height, and career-high rank with
+        the earliest week it was reached. Their ``id`` is the corpus person id
+        that archive match rows carry as ``winner.player_id`` /
+        ``loser.player_id``, scoped per tour — never a roster id.
+        """
+        return _page(
+            self._request(
+                "/history/archive/players",
+                self._params({"name": name, "tour": tour, "limit": limit, "offset": offset}),
+            ),
+            ArchivePlayerBio,
+        )
+
+    def get_archive_career(self, name: str) -> ArchiveCareer | None:
+        """Career aggregates over the results archive (1968–2022) for one player. **BASIC.**
+
+        ``name`` must resolve to exactly one person: an ambiguous fragment
+        raises :class:`~livetennisapi.BadRequest` with
+        ``error_code == "ambiguous_name"`` and the candidate list in
+        ``exc.body["candidates"]``; an unknown one raises
+        :class:`~livetennisapi.NotFound`.
+        """
+        return ArchiveCareer.from_dict(self._request("/history/archive/career", {"name": name}))
+
+    def get_h2h(self, p1: str, p2: str) -> HeadToHead | None:
+        """Head-to-head across both halves of the product. **BASIC.**
+
+        The results archive (1968–2022) plus our own completed matches
+        (2023→now), in one call. Names are the keys (min 3 chars each) —
+        archive people have no roster ids. A fragment matching more than one
+        player raises :class:`~livetennisapi.BadRequest` with
+        ``error_code == "ambiguous_name"`` and the candidate list in
+        ``exc.body["candidates"]``. ``meetings[i]["winner"]`` is 1|2 OF THIS
+        REQUEST (your ``p1``/``p2``), not of the underlying match row.
+        """
+        return HeadToHead.from_dict(self._request("/h2h", {"p1": p1, "p2": p2}))
 
     # -- pagination -----------------------------------------------------------
 
@@ -258,9 +457,34 @@ class AsyncLiveTennisAPI(_BaseClient):
     async def health(self) -> dict[str, Any]:
         return await self._request("/health") or {}
 
-    async def list_matches(self, status: str = "live", *, limit: int = 50, offset: int = 0) -> Page:
+    async def list_matches(
+        self,
+        status: str = "live",
+        *,
+        tour: str | None = None,
+        player: int | list[int] | None = None,
+        country: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
         return _page(
-            await self._request("/matches", self._params({"status": status, "limit": limit, "offset": offset})),
+            await self._request(
+                "/matches",
+                self._params(
+                    {
+                        "status": status,
+                        "tour": tour,
+                        "player": player,
+                        "country": country,
+                        "from": from_,
+                        "to": to,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
             Match,
         )
 
@@ -296,14 +520,104 @@ class AsyncLiveTennisAPI(_BaseClient):
     async def get_market_prices(self, match_id: int, *, limit: int = 50) -> Market | None:
         return Market.from_dict(await self._request(f"/markets/{match_id}/prices", self._params({"limit": limit})))
 
-    async def list_completed_matches(self, *, limit: int = 50, offset: int = 0) -> Page:
+    async def list_completed_matches(
+        self,
+        *,
+        tour: str | None = None,
+        player: int | list[int] | None = None,
+        country: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        coverage: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
         return _page(
-            await self._request("/history/matches", self._params({"limit": limit, "offset": offset})),
+            await self._request(
+                "/history/matches",
+                self._params(
+                    {
+                        "tour": tour,
+                        "player": player,
+                        "country": country,
+                        "from": from_,
+                        "to": to,
+                        "coverage": coverage,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
             Match,
         )
 
     async def list_fixtures(self, *, limit: int = 50, offset: int = 0) -> Page:
         return _page(await self._request("/fixtures", self._params({"limit": limit, "offset": offset})), Fixture)
+
+    async def list_tournaments(
+        self, search: str | None = None, *, tour: str | None = None, limit: int = 50, offset: int = 0
+    ) -> Page:
+        return _page(
+            await self._request(
+                "/tournaments",
+                self._params({"search": search, "tour": tour, "limit": limit, "offset": offset}),
+            ),
+            Tournament,
+        )
+
+    async def get_tournament(self, tournament_id: str) -> Tournament | None:
+        return Tournament.from_dict(await self._request(f"/tournaments/{tournament_id}"))
+
+    async def list_archive_matches(
+        self,
+        *,
+        tour: str | None = None,
+        name: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        round: str | None = None,
+        level: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        return _page(
+            await self._request(
+                "/history/archive/matches",
+                self._params(
+                    {
+                        "tour": tour,
+                        "name": name,
+                        "from": from_,
+                        "to": to,
+                        "round": round,
+                        "level": level,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
+            ArchiveMatch,
+        )
+
+    async def get_archive_match(self, archive_id: int) -> ArchiveMatch | None:
+        return ArchiveMatch.from_dict(await self._request(f"/history/archive/matches/{archive_id}"))
+
+    async def list_archive_players(
+        self, name: str | None = None, *, tour: str | None = None, limit: int = 50, offset: int = 0
+    ) -> Page:
+        return _page(
+            await self._request(
+                "/history/archive/players",
+                self._params({"name": name, "tour": tour, "limit": limit, "offset": offset}),
+            ),
+            ArchivePlayerBio,
+        )
+
+    async def get_archive_career(self, name: str) -> ArchiveCareer | None:
+        return ArchiveCareer.from_dict(await self._request("/history/archive/career", {"name": name}))
+
+    async def get_h2h(self, p1: str, p2: str) -> HeadToHead | None:
+        return HeadToHead.from_dict(await self._request("/h2h", {"p1": p1, "p2": p2}))
 
     async def paginate(
         self, method: str, /, *args: Any, page_size: int = _MAX_LIMIT, **kwargs: Any

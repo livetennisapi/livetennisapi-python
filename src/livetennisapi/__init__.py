@@ -15,7 +15,7 @@ Documentation: https://docs.livetennisapi.com
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from .client import AsyncLiveTennisAPI, LiveTennisAPI
 from .errors import (
@@ -33,8 +33,13 @@ from .errors import (
 )
 from .models import (
     Analysis,
+    ArchiveCareer,
+    ArchiveMatch,
+    ArchiveParticipant,
+    ArchivePlayerBio,
     Event,
     Fixture,
+    HeadToHead,
     ListMeta,
     Market,
     Match,
@@ -43,6 +48,7 @@ from .models import (
     Player,
     Price,
     Score,
+    Tournament,
 )
 
 __all__ = [
@@ -62,6 +68,12 @@ __all__ = [
     "Event",
     "Fixture",
     "Analysis",
+    "Tournament",
+    "ArchiveMatch",
+    "ArchiveParticipant",
+    "ArchivePlayerBio",
+    "ArchiveCareer",
+    "HeadToHead",
     # errors
     "LiveTennisAPIError",
     "APIStatusError",

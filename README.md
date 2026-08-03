@@ -105,9 +105,13 @@ Both the feed and the model fields are ULTRA-only. A runnable example lives in
 |---|:--:|:--:|:--:|:--:|
 | `list_matches` `get_match` `get_match_score` | ✅ | ✅ | ✅ | ✅ |
 | `search_players` `get_player` `list_fixtures` | ✅ | ✅ | ✅ | ✅ |
-| `list_completed_matches` (history) | — | ✅ | ✅ | ✅ |
+| `list_tournaments` `get_tournament` | ✅ | ✅ | ✅ | ✅ |
+| `list_completed_matches` (history) | — | ✅¹ | ✅ | ✅ |
+| `list_archive_matches` `get_archive_match` `list_archive_players` `get_archive_career` `get_h2h` (results archive · head-to-head) | — | ✅¹ | ✅ | ✅ |
 | `list_match_events` `list_markets` `get_market_prices` | — | — | ✅ | ✅ |
 | `get_match_analysis`, `win_probability_p1` / `danger`, WebSocket | — | — | — | ✅ |
+
+¹ Also unlocked by any History plan, which works on top of a FREE key.
 
 Calling above your tier raises `UpgradeRequired`, which tells you which tier you need:
 
@@ -136,6 +140,38 @@ All inherit from `LiveTennisAPIError`.
 Requests retry automatically on **429 and 5xx only**, honouring `Retry-After`
 with exponential backoff and jitter. Other 4xx are never retried — a bad key or
 an unentitled tier cannot start working, and retrying only burns rate limit.
+
+## The results archive (1968–2022) and head-to-head
+
+Two halves, one product: the **results archive** — a licensed corpus of
+completed-match results, ATP and WTA, main draws, qualifying and the
+ITF/futures tiers, 1968 through 2022 — and the **point-by-point tape
+(2023→now)** behind `list_completed_matches`. The archive ends exactly where
+the tape begins, so no match is ever served from two datasets.
+
+```python
+# Winner/loser-shaped results with ranks and seeds AT THE TIME of the match.
+for m in client.list_archive_matches(tour="atp", name="borg", round="F"):
+    print(m.event_date, m.tournament, m.winner.name, m.score)
+
+# Cross-era head-to-head — archive + our own completed matches, in one call.
+h2h = client.get_h2h("federer", "nadal")
+print(h2h.totals, h2h.by_surface)
+
+# Career aggregates: W-L by surface/level/year, titles, summed serve stats.
+career = client.get_archive_career("borg")
+```
+
+Three things worth knowing before you lean on it:
+
+- **`event_date` is the tournament START date** — per-match dates do not exist
+  in this era's records, and none are invented.
+- **Names are the keys** for `get_h2h` and `get_archive_career` (archive
+  people have no roster ids). A fragment matching more than one player raises
+  `BadRequest` with `error_code == "ambiguous_name"` and the candidate list in
+  `exc.body["candidates"]` — disambiguate and retry.
+- **`meetings[i]["winner"]` in an H2H is 1|2 of your request** (`p1`/`p2` as
+  you passed them), not of the underlying match row.
 
 ## Pagination
 

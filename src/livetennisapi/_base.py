@@ -27,6 +27,7 @@ _TIER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("/events", "PRO"),
     ("/markets", "PRO"),
     ("/history", "BASIC"),
+    ("/h2h", "BASIC"),
 )
 
 
