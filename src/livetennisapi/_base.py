@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urljoin
 
-from .errors import RateLimited, UpgradeRequired, error_for_status
+from .errors import AbuseThrottled, RateLimited, UpgradeRequired, error_for_status
 
 DEFAULT_BASE_URL = "https://api.livetennisapi.com/api/public/v1"
 DEFAULT_TIMEOUT = 30.0
@@ -21,17 +21,44 @@ DEFAULT_MAX_RETRIES = 2
 
 #: Endpoints that need more than the FREE floor, so a 403 can say which tier
 #: is needed rather than surfacing the API's bare
-#: ``{"error": "upgrade_required"}``. First matching marker wins.
+#: ``{"error": "upgrade_required"}``. First matching marker wins — ``/rally``
+#: sits above ``/history`` deliberately, so ``/history/matches/{id}/rally``
+#: names ULTRA rather than BASIC.
 _TIER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("/analysis", "ULTRA"),
+    ("/statistics", "ULTRA"),
+    ("/rally", "ULTRA"),
+    ("/charting", "ULTRA"),
+    ("/ws-token", "ULTRA"),
     ("/events", "PRO"),
     ("/markets", "PRO"),
+    ("/prices", "PRO"),
     ("/history", "BASIC"),
     ("/h2h", "BASIC"),
 )
 
 
-def _required_tier_for(path: str) -> str | None:
+def _required_tier_for(path: str, params: Mapping[str, Any] | None = None) -> str | None:
+    """The lowest tier that unlocks a request, where the SDK can know it.
+
+    A few endpoints gate on their PARAMETERS rather than their path, so the
+    request's params take part in the answer:
+
+    - ``/rankings`` — the rank-ordered listing (no ``player``) is PRO; the
+      per-player as-of mode (``player=``) is ULTRA.
+    - ``/history/packages`` — tape packages are PRO; any non-tape ``kind``
+      (rankings, rally) and the ``year=`` archive listing are ULTRA.
+    - ``/matches?status=completed`` — completed listings need BASIC even
+      though ``/matches`` itself is FREE.
+    """
+    params = params or {}
+    if "/rankings" in path:
+        return "ULTRA" if params.get("player") else "PRO"
+    if "/history/packages" in path:
+        kind = str(params.get("kind") or "tape")
+        return "ULTRA" if kind != "tape" or params.get("year") else "PRO"
+    if path.rstrip("/").endswith("/matches") and "/history" not in path and params.get("status") == "completed":
+        return "BASIC"
     for marker, tier in _TIER_REQUIREMENTS:
         if marker in path:
             return tier
@@ -106,7 +133,7 @@ class _BaseClient:
         except Exception:
             return None
 
-    def _raise_for_status(self, response: Any, path: str) -> None:
+    def _raise_for_status(self, response: Any, path: str, params: Mapping[str, Any] | None = None) -> None:
         """Map a non-2xx response onto the exception hierarchy."""
         status = response.status_code
         if 200 <= status < 300:
@@ -126,10 +153,17 @@ class _BaseClient:
                 body=body,
                 headers=headers,
                 request_url=url,
-                required_tier=_required_tier_for(path),
+                required_tier=_required_tier_for(path, params),
             )
         if cls is RateLimited:
-            raise RateLimited(
+            # Three distinct 429 bodies share the status code: the per-minute
+            # window, the daily cap (`scope: "day"` + `resets_at`), and the
+            # abuse throttle (`abuse_throttled` + `retry_at_epoch`) — the last
+            # one gets its own type because "wait a minute" is exactly the
+            # wrong advice for it.
+            if code == "abuse_throttled":
+                cls = AbuseThrottled
+            raise cls(
                 message,
                 status_code=status,
                 body=body,
@@ -149,6 +183,25 @@ class _BaseClient:
         burns rate-limit budget against a request that cannot start working.
         """
         return status == 429 or status >= 500
+
+    def _retryable(self, response: Any) -> bool:
+        """Whether an in-flight retry could plausibly succeed.
+
+        Refines :meth:`_should_retry` with the response BODY: two 429 shapes
+        cannot clear within any sane backoff window and are surfaced
+        immediately instead — the daily cap (``scope: "day"``, which holds
+        until the ``resets_at`` instant, typically hours away) and the abuse
+        throttle (``abuse_throttled``, a 24-hour block for chronic over-cap
+        clients; retrying it is the very behaviour that earns it).
+        """
+        status = response.status_code
+        if not self._should_retry(status):
+            return False
+        if status == 429:
+            body = self._decode(response)
+            if isinstance(body, Mapping) and (body.get("error") == "abuse_throttled" or body.get("scope") == "day"):
+                return False
+        return True
 
     def _backoff(self, attempt: int, retry_after: float | None) -> float:
         """Seconds to wait before the next attempt.

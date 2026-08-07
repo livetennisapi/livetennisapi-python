@@ -18,6 +18,7 @@ rather than coerced.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
@@ -41,6 +42,18 @@ __all__ = [
     "ArchivePlayerBio",
     "ArchiveCareer",
     "HeadToHead",
+    "TapeRow",
+    "TapeMeta",
+    "HistoryTape",
+    "MatchStatistics",
+    "RankingRecord",
+    "RallyPoint",
+    "RallyMatch",
+    "ChartingPlayer",
+    "ChartingMatch",
+    "HistoryPackage",
+    "WSToken",
+    "Usage",
 ]
 
 T = TypeVar("T", bound="Model")
@@ -157,7 +170,9 @@ class Score(Model):
     player-major, not set-major; indexing it the other way is the single most
     common mistake against this API.
 
-    ``win_probability_p1`` and ``danger`` are present only on the ULTRA tier.
+    ``win_probability_p1`` and ``danger`` are present only on the ULTRA tier —
+    on REST and on the WebSocket score frames alike. A null value means the
+    model had no output for that state, not that the channel withholds it.
     """
 
     _datetime_fields: ClassVar[tuple[str, ...]] = ("timestamp",)
@@ -521,6 +536,354 @@ class HeadToHead(Model):
     totals: dict[str, Any] | None = None
     by_surface: dict[str, Any] | None = None
     meetings: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class TapeRow(Score):
+    """One row of a match tape — a :class:`Score` plus point attribution.
+
+    Rows we watched live carry a real ``timestamp``; rows expanded after the
+    fact from a finished-match record carry a null ``timestamp`` AND null
+    model fields — nothing is synthesised, so a null ``timestamp`` is the
+    reliable row-level marker of a reconstructed row.
+
+    ``point_winner`` (1|2) is who won the point this row records. It is
+    present ONLY on ``sequence="clean"`` rows, and only where the transition
+    from the previous row is a single attributable point — null on gaps, torn
+    rows and the first row, and never on the raw sequence (raw rows are
+    corrections, not points). Derived at read time, never guessed.
+    """
+
+    point_winner: int | None = None
+
+
+@dataclass
+class TapeMeta(Model):
+    """Coverage metadata for one tape.
+
+    ``coverage`` says how the tape came to exist (``from_start`` | ``partial``
+    | ``reconstructed`` | ``reconstructed_partial`` | ``none``) and
+    ``point_source`` where the served rows came from (``observed`` |
+    ``reconstructed`` | ``mixed``, null on an empty tape) — read both before
+    backtesting. ``rows`` is the served length AFTER any ``sequence="clean"``
+    collapse; ``raw_rows`` the length before it.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("generated_at",)
+
+    match_id: int | None = None
+    rows: int | None = None
+    coverage: str | None = None
+    point_source: str | None = None
+    raw_rows: int | None = None
+    unique_states: int | None = None
+    sequence: str | None = None
+    from_archive: bool | None = None
+    generated_at: datetime | None = None
+
+
+@dataclass
+class HistoryTape(Model):
+    """The point-by-point tape for one match. **BASIC, or any History plan.**
+
+    ``tape`` is the chronological score sequence; it works on a LIVE match
+    too, assembled from whatever has been committed so far. ``tiebreaks`` is
+    per-set tiebreak final scores from observed states only, aligned to the
+    sets of the final scoreline — ``{"p1": …, "p2": …}`` for a 7-6 set whose
+    observed maximum tiebreak state is a valid terminal shape, null per set
+    otherwise, and null overall when the match has no 7-6 set. ``profiles``
+    holds model profiles, oldest first.
+    """
+
+    match: Match | None = None
+    tape: list[TapeRow] = field(default_factory=list)
+    tiebreaks: list[dict[str, Any] | None] | None = None
+    profiles: list[dict[str, Any]] | None = None
+    meta: TapeMeta | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> HistoryTape | None:
+        obj = super().from_dict(data)
+        if obj is None:
+            return None
+        if isinstance(obj.match, Mapping):
+            obj.match = Match.from_dict(obj.match)
+        if isinstance(obj.tape, list):
+            obj.tape = [r for r in (TapeRow.from_dict(x) for x in obj.tape) if r is not None]
+        if isinstance(obj.meta, Mapping):
+            obj.meta = TapeMeta.from_dict(obj.meta)
+        return obj
+
+
+@dataclass
+class MatchStatistics(Model):
+    """In-play statistics for one match. **ULTRA.**
+
+    Two families that are deliberately not merged: the top level of
+    ``players["pN"]`` is DERIVED from the point-by-point record;
+    ``players["pN"]["measured"]`` is counted upstream — which is why only the
+    measured family can hold aces, double faults, the serve split, winners and
+    unforced errors. Every measured field is optional and an absent field is
+    OMITTED, never zero-filled.
+
+    Branch on ``freshness["derived"]`` / ``freshness["measured"]`` rather than
+    the top-level ``coverage``, which only summarises the response. The two
+    ``age_seconds`` use DIFFERENT clocks (derived: behind the newest score
+    row; measured: wall clock) and must not be compared. ``coverage`` of
+    ``"none"`` on both families returns 200 with null ``players`` — the match
+    exists and holding nothing for it is the honest answer.
+    """
+
+    match_id: int | None = None
+    coverage: str | None = None
+    as_of: str | None = None
+    age_seconds: int | None = None
+    games_counted: int | None = None
+    tiebreak_games_excluded: int | None = None
+    inconsistent_games_excluded: int | None = None
+    sets_covered: list[int] | None = None
+    freshness: dict[str, Any] | None = None
+    detail: str | None = None
+    players: dict[str, Any] | None = None
+
+    @property
+    def p1(self) -> dict[str, Any] | None:
+        """Player 1's statistics block, or ``None`` when nothing is held."""
+        return (self.players or {}).get("p1")
+
+    @property
+    def p2(self) -> dict[str, Any] | None:
+        return (self.players or {}).get("p2")
+
+
+@dataclass
+class RankingRecord(Model):
+    """One ranking record in force at the requested instant.
+
+    ``system`` is always explicit and the systems are never collapsed into a
+    single "rank" — they are not comparable. ATP/WTA and the ITF circuits
+    carry ``rank`` + ``points``; UTR carries ``rating`` with null rank and
+    points, because a rating has neither. ``previous_rank`` is the rank at the
+    immediately preceding snapshot week (ATP/WTA only; null when no prior week
+    is held, and always null for ITF/UTR); ``rank_movement`` is the circuit's
+    own signed weekly movement (ITF systems only). ``player_name`` is present
+    on listing rows — where ``player_id`` may be null for players outside the
+    roster, so the published table has no silent holes.
+    """
+
+    _date_fields: ClassVar[tuple[str, ...]] = ("effective_date",)
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("observed_at",)
+
+    player_id: int | None = None
+    player_name: str | None = None
+    system: str | None = None
+    tour: str | None = None
+    rank: int | None = None
+    points: int | None = None
+    previous_rank: int | None = None
+    rank_movement: int | None = None
+    rating: float | None = None
+    effective_date: date | None = None
+    observed_at: datetime | None = None
+
+
+@dataclass
+class RallyPoint(Model):
+    """One charted point — how the point was played, not just what it scored.
+
+    The parsed fields are our reading of the charter's own notation string
+    (available as :attr:`notation`, always present verbatim); ``parsed`` is
+    False when the notation contained something we could not read cleanly —
+    the recognised part is still returned, so filter on ``parsed`` if you want
+    only unambiguous rows. ``rally_length`` counts strokes including the serve
+    (an ace is 1, a double fault 0). ``outcome`` of ``"error"`` means the
+    charter recorded a miss without saying whether it was forced — never
+    guessed.
+    """
+
+    point: int | None = None
+    set: list[int | None] | None = None
+    games: list[int | None] | None = None
+    score: str | None = None
+    game: int | None = None
+    is_tiebreak: bool | None = None
+    server: int | None = None
+    point_winner: int | None = None
+    parsed: bool | None = None
+    serve_number: int | None = None
+    serve_direction: str | None = None
+    rally_length: int | None = None
+    outcome: str | None = None
+    error_location: str | None = None
+    ending_stroke: str | None = None
+    ending_wing: str | None = None
+    is_ace: bool | None = None
+    is_double_fault: bool | None = None
+    is_serve_and_volley: bool | None = None
+    shots: list[dict[str, Any]] | None = None
+
+    @property
+    def notation(self) -> str | None:
+        """The charter's own shot string, verbatim (the wire field ``raw``).
+
+        Named ``notation`` here because ``.raw`` is already every model's
+        whole payload; both serves are joined by ``;`` when the first was a
+        fault.
+        """
+        value = self.raw.get("raw")
+        return value if isinstance(value, str) else None
+
+
+@dataclass
+class RallyMatch(Model):
+    """One charted match. **ULTRA.**
+
+    Rally construction has its OWN id space (``rally_match_id``): the charted
+    corpus reaches back decades and concentrates on the biggest events, so
+    most charted matches predate our own collection — ``match_id`` is our id
+    only when the charted match is also one we hold, null otherwise.
+    ``points_parsed`` over ``points`` is the per-match parse-quality number.
+    The detail endpoints add ``rally`` (the points, in play order, paged) and
+    ``meta`` (``meta.total`` is the match's full point count).
+    """
+
+    _date_fields: ClassVar[tuple[str, ...]] = ("date",)
+
+    rally_match_id: int | None = None
+    source_id: str | None = None
+    match_id: int | None = None
+    date: date | None = None
+    tournament: str | None = None
+    round: str | None = None
+    surface: str | None = None
+    gender: str | None = None
+    best_of: int | None = None
+    players: list[dict[str, Any]] | None = None
+    points: int | None = None
+    points_parsed: int | None = None
+    #: Detail endpoints only — the charted points, in play order.
+    rally: list[RallyPoint] = field(default_factory=list)
+    meta: ListMeta | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> RallyMatch | None:
+        obj = super().from_dict(data)
+        if obj is None:
+            return None
+        if isinstance(obj.rally, list):
+            obj.rally = [p for p in (RallyPoint.from_dict(x) for x in obj.rally) if p is not None]
+        if isinstance(obj.meta, Mapping):
+            obj.meta = ListMeta.from_dict(obj.meta)
+        return obj
+
+
+@dataclass
+class ChartingPlayer(Model):
+    """Career shot-level charting aggregate for one player. **ULTRA.**
+
+    From the Match Charting Project: serve placement, return depth and
+    outcomes, net and serve-and-volley conversion, clutch serving and
+    returning, winners and errors by wing, rally-length and shot-direction
+    tendencies. Every number in ``families`` is a raw SUM over the player's
+    charted matches and ``matches_charted`` states the sample. Coverage is
+    curated — concentrated on the majors, NOT full-slate.
+    """
+
+    player: dict[str, Any] | None = None
+    matches_charted: int | None = None
+    coverage: str | None = None
+    families: dict[str, Any] | None = None
+
+
+@dataclass
+class ChartingMatch(Model):
+    """One charted match, every stat family for both players. **ULTRA.**
+
+    ``families`` carries the per-set split (rows ``1``, ``2``, ``Total``)
+    exactly as charted. ``charting_match_id`` is this product's own id space.
+    """
+
+    charting_match_id: int | None = None
+    mcp_id: str | None = None
+    gender: str | None = None
+    players: dict[str, Any] | None = None
+    families: dict[str, Any] | None = None
+
+
+@dataclass
+class HistoryPackage(Model):
+    """A published monthly bulk package.
+
+    Coverage is not a contiguous run of months and is still being extended
+    backwards — treat the packages listing as the authoritative set of months
+    that exist. The JSONL file holds one line PER MATCH (a whole tape object,
+    coverage meta included); the CSV is one row per point and carries no
+    coverage columns. ``kind`` is present only on non-tape packages; on a
+    rankings package ``match_count`` counts players and ``row_count`` ranking
+    records.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("built_at",)
+
+    period: str | None = None
+    status: str | None = None
+    kind: str | None = None
+    match_count: int | None = None
+    row_count: int | None = None
+    files: list[dict[str, Any]] | None = None
+    built_at: datetime | None = None
+
+
+@dataclass
+class WSToken(Model):
+    """A connection token for the high-fan-out push WebSocket feed. **ULTRA.**
+
+    ``ws_url`` is the push endpoint and ``channels`` the channel vocabulary:
+    ``match:{id}`` per-match streams and ``slate:all`` for every live score
+    frame. Frames are the same allowlist score objects the polling endpoints
+    return. The token is short-lived — mint a fresh one on reconnect.
+    """
+
+    token: str | None = None
+    expires_in: int | None = None
+    ws_url: str | None = None
+    channels: dict[str, Any] | None = None
+
+    @property
+    def slate_channel(self) -> str | None:
+        """The all-matches channel name (``slate:all``)."""
+        value = (self.channels or {}).get("slate")
+        return value if isinstance(value, str) else None
+
+    def match_channel(self, match_id: int) -> str | None:
+        """The channel name for one match, from the server's own template."""
+        template = (self.channels or {}).get("match")
+        if not isinstance(template, str):
+            return None
+        return re.sub(r"\{[^}]*\}", str(match_id), template)
+
+
+@dataclass
+class Usage(Model):
+    """Your own usage vs quota. Any tier; the read itself is quota-exempt.
+
+    ``today`` is current to the second and ``history`` covers the last 30
+    days, oldest first. The per-minute window lives on the ``X-RateLimit-*``
+    headers of every response, not here — and the daily reset instant is only
+    ever stated by the daily 429 body (``resets_at``), not by this endpoint.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("tier_expires_at", "as_of")
+
+    principal: str | None = None
+    tier: str | None = None
+    base_tier: str | None = None
+    tier_expires_at: datetime | None = None
+    channel: str | None = None
+    limits: dict[str, Any] | None = None
+    today: dict[str, Any] | None = None
+    history: list[dict[str, Any]] | None = None
+    as_of: datetime | None = None
 
 
 @dataclass

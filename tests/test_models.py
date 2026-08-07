@@ -12,14 +12,25 @@ from livetennisapi.models import (
     ArchiveMatch,
     ArchiveParticipant,
     ArchivePlayerBio,
+    ChartingMatch,
+    ChartingPlayer,
     Fixture,
     HeadToHead,
+    HistoryPackage,
+    HistoryTape,
     Market,
     Match,
+    MatchStatistics,
     Page,
     Player,
+    RallyMatch,
+    RallyPoint,
+    RankingRecord,
     Score,
+    TapeRow,
     Tournament,
+    Usage,
+    WSToken,
 )
 
 
@@ -260,6 +271,204 @@ class TestHeadToHead:
         h2h = HeadToHead.from_dict({"players": None, "totals": {"meetings": 0}})
         assert h2h.players is None
         assert h2h.meetings == []
+
+
+class TestHistoryTape:
+    def test_tape_rows_are_scores_with_point_winner(self):
+        tape = HistoryTape.from_dict(
+            {
+                "match": {"id": 18953, "tour": "atp"},
+                "tape": [
+                    {"sets": [0, 0], "games": [[0], [0]], "timestamp": "2026-08-01T10:00:00Z"},
+                    {"sets": [0, 0], "games": [[1], [0]], "point_winner": 1},
+                ],
+                "meta": {"match_id": 18953, "rows": 2, "coverage": "from_start",
+                         "point_source": "observed", "sequence": "clean"},
+            }
+        )
+        assert isinstance(tape.match, Match)
+        assert isinstance(tape.tape[0], TapeRow)
+        assert isinstance(tape.tape[0], Score)  # a TapeRow is a Score
+        assert tape.tape[0].games_for_set(0) == (0, 0)
+        assert tape.tape[0].point_winner is None  # first row: never attributable
+        assert tape.tape[1].point_winner == 1
+        assert tape.meta.coverage == "from_start"
+        assert tape.meta.point_source == "observed"
+
+    def test_reconstructed_row_nulls_are_preserved(self):
+        # Null timestamp is THE row-level marker of a reconstructed row.
+        row = TapeRow.from_dict(
+            {"sets": [1, 0], "timestamp": None, "win_probability_p1": None, "danger": None}
+        )
+        assert row.timestamp is None
+        assert row.win_probability_p1 is None
+
+    def test_per_set_tiebreaks(self):
+        tape = HistoryTape.from_dict(
+            {"tape": [], "tiebreaks": [None, {"p1": 7, "p2": 5}]}
+        )
+        assert tape.tiebreaks[0] is None  # set 1 was not a breaker (or unobserved)
+        assert tape.tiebreaks[1] == {"p1": 7, "p2": 5}
+
+    def test_no_seven_six_set_means_null_tiebreaks(self):
+        assert HistoryTape.from_dict({"tape": [], "tiebreaks": None}).tiebreaks is None
+
+
+class TestMatchStatistics:
+    def test_families_and_freshness(self):
+        stats = MatchStatistics.from_dict(
+            {
+                "match_id": 18953,
+                "coverage": "live",
+                "games_counted": 18,
+                "tiebreak_games_excluded": 1,
+                "freshness": {
+                    "derived": {"coverage": "live", "age_seconds": 0},
+                    "measured": {"coverage": "stale", "age_seconds": 95},
+                    "measured_divergence": None,
+                },
+                "players": {
+                    "p1": {"hold_pct": 89, "measured": {"aces": 11, "double_faults": 2}},
+                    "p2": {"hold_pct": 78, "measured": {"aces": 3}},
+                },
+            }
+        )
+        assert stats.p1["hold_pct"] == 89
+        assert stats.p1["measured"]["aces"] == 11
+        # Measured fields are OMITTED when absent, never zero-filled.
+        assert "double_faults" not in stats.p2["measured"]
+        assert stats.freshness["measured"]["coverage"] == "stale"
+
+    def test_nothing_held_is_null_players_not_a_crash(self):
+        stats = MatchStatistics.from_dict({"match_id": 1, "coverage": "none", "players": None})
+        assert stats.p1 is None
+        assert stats.p2 is None
+
+
+class TestRankingRecord:
+    def test_rank_systems_with_previous_rank(self):
+        rec = RankingRecord.from_dict(
+            {"player_id": 925, "system": "atp", "rank": 3, "points": 6030,
+             "previous_rank": 4, "effective_date": "2026-08-03",
+             "observed_at": "2026-08-03T09:00:00Z"}
+        )
+        assert rec.previous_rank == 4
+        assert isinstance(rec.effective_date, date)
+        assert isinstance(rec.observed_at, datetime)
+
+    def test_utr_is_a_rating_not_a_rank(self):
+        rec = RankingRecord.from_dict({"player_id": 925, "system": "utr", "rank": None,
+                                       "points": None, "rating": 15.83, "previous_rank": None})
+        assert rec.rank is None
+        assert rec.rating == 15.83
+
+    def test_listing_rows_carry_the_published_name(self):
+        # Off-roster players keep their published name with a null id — no silent holes.
+        rec = RankingRecord.from_dict({"player_id": None, "player_name": "A. Nobody", "system": "wta", "rank": 731})
+        assert rec.player_id is None
+        assert rec.player_name == "A. Nobody"
+
+
+class TestRally:
+    def test_rally_match_with_points(self):
+        m = RallyMatch.from_dict(
+            {
+                "rally_match_id": 4242,
+                "match_id": None,
+                "date": "2008-07-06",
+                "players": [{"name": "Roger Federer", "hand": "R"}, {"name": "Rafael Nadal", "hand": "L"}],
+                "points": 413,
+                "points_parsed": 409,
+                "rally": [
+                    {"point": 1, "server": 1, "point_winner": 2, "raw": "4d;236b2f1*", "parsed": True,
+                     "rally_length": 3, "is_ace": False, "serve_direction": "wide"},
+                ],
+                "meta": {"limit": 50, "offset": 0, "count": 1, "total": 413},
+            }
+        )
+        assert m.match_id is None  # most charted matches predate our collection
+        assert isinstance(m.date, date)
+        assert isinstance(m.rally[0], RallyPoint)
+        assert m.rally[0].point_winner == 2
+        assert m.meta.total == 413
+
+    def test_notation_survives_the_raw_name_collision(self):
+        """The wire field is `raw`, which every model already uses for its
+        payload — the shot string must stay reachable via `.notation`."""
+        p = RallyPoint.from_dict({"point": 1, "raw": "6f28b3*", "parsed": True})
+        assert p.notation == "6f28b3*"
+        assert p.raw == {"point": 1, "raw": "6f28b3*", "parsed": True}
+
+    def test_unparsed_point_keeps_the_recognised_part(self):
+        p = RallyPoint.from_dict({"point": 9, "raw": "??", "parsed": False, "serve_number": None})
+        assert p.parsed is False
+        assert p.notation == "??"
+
+
+class TestCharting:
+    def test_player_aggregate(self):
+        cp = ChartingPlayer.from_dict(
+            {"player": {"name": "Pete Sampras", "gender": "men"}, "matches_charted": 361,
+             "coverage": "curated", "families": {"serve_placement": {"deuce_wide": 1204}}}
+        )
+        assert cp.matches_charted == 361
+        assert cp.families["serve_placement"]["deuce_wide"] == 1204
+
+    def test_charted_match(self):
+        cm = ChartingMatch.from_dict(
+            {"charting_match_id": 777, "mcp_id": "20080706-M-Wimbledon-F", "gender": "M",
+             "players": {"p1": "Roger Federer", "p2": "Rafael Nadal"},
+             "families": {"overview": {"1": {}, "2": {}, "Total": {}}}}
+        )
+        assert cm.charting_match_id == 777
+        assert "Total" in cm.families["overview"]
+
+
+class TestHistoryPackage:
+    def test_manifest(self):
+        pkg = HistoryPackage.from_dict(
+            {"period": "2026-07", "status": "ready", "match_count": 4211, "row_count": 801532,
+             "files": [{"format": "jsonl", "filename": "2026-07.jsonl.gz", "bytes": 1024, "sha256": "ab"}],
+             "built_at": "2026-08-01T02:00:00Z"}
+        )
+        assert pkg.period == "2026-07"
+        assert pkg.kind is None  # absent on tape packages, so old parsers see no change
+        assert isinstance(pkg.built_at, datetime)
+        assert pkg.files[0]["format"] == "jsonl"
+
+    def test_rankings_package_counts_players_and_records(self):
+        pkg = HistoryPackage.from_dict({"period": "2026-07", "kind": "rankings", "match_count": 2100})
+        assert pkg.kind == "rankings"
+
+
+class TestWSToken:
+    def test_channels(self):
+        tok = WSToken.from_dict(
+            {"token": "eyJ…", "expires_in": 300,
+             "ws_url": "wss://api.livetennisapi.com/connection/websocket",
+             "channels": {"match": "match:{id}", "slate": "slate:all"}}
+        )
+        assert tok.slate_channel == "slate:all"
+        assert tok.match_channel(18953) == "match:18953"
+
+    def test_channel_helpers_survive_missing_channels(self):
+        tok = WSToken.from_dict({"token": "t"})
+        assert tok.slate_channel is None
+        assert tok.match_channel(1) is None
+
+
+class TestUsage:
+    def test_shape(self):
+        usage = Usage.from_dict(
+            {"tier": "free", "base_tier": "free", "channel": "direct",
+             "limits": {"per_minute": 30, "per_day": 100},
+             "today": {"calls": 41, "errors": 0, "remaining_day": 59},
+             "history": [{"day": "2026-08-06", "calls": 100, "errors": 2}],
+             "as_of": "2026-08-07T10:00:00Z"}
+        )
+        assert usage.limits["per_day"] == 100
+        assert usage.today["remaining_day"] == 59
+        assert isinstance(usage.as_of, datetime)
 
 
 class TestPage:

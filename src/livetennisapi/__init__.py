@@ -1,8 +1,8 @@
 """Official Python client for the `Live Tennis API <https://livetennisapi.com>`_.
 
 Real-time tennis scores, players, rankings, match-winner market prices and
-model win-probability for ATP, WTA, Challenger and ITF — over REST and
-WebSocket.
+model win-probability for ATP, WTA, Challenger, ITF and juniors — over REST
+and WebSocket.
 
     from livetennisapi import LiveTennisAPI
 
@@ -15,10 +15,11 @@ Documentation: https://docs.livetennisapi.com
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 from .client import AsyncLiveTennisAPI, LiveTennisAPI
 from .errors import (
+    AbuseThrottled,
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
@@ -37,18 +38,30 @@ from .models import (
     ArchiveMatch,
     ArchiveParticipant,
     ArchivePlayerBio,
+    ChartingMatch,
+    ChartingPlayer,
     Event,
     Fixture,
     HeadToHead,
+    HistoryPackage,
+    HistoryTape,
     ListMeta,
     Market,
     Match,
+    MatchStatistics,
     Model,
     Page,
     Player,
     Price,
+    RallyMatch,
+    RallyPoint,
+    RankingRecord,
     Score,
+    TapeMeta,
+    TapeRow,
     Tournament,
+    Usage,
+    WSToken,
 )
 
 __all__ = [
@@ -74,6 +87,18 @@ __all__ = [
     "ArchivePlayerBio",
     "ArchiveCareer",
     "HeadToHead",
+    "TapeRow",
+    "TapeMeta",
+    "HistoryTape",
+    "MatchStatistics",
+    "RankingRecord",
+    "RallyPoint",
+    "RallyMatch",
+    "ChartingPlayer",
+    "ChartingMatch",
+    "HistoryPackage",
+    "WSToken",
+    "Usage",
     # errors
     "LiveTennisAPIError",
     "APIStatusError",
@@ -84,6 +109,7 @@ __all__ = [
     "UpgradeRequired",
     "NotFound",
     "RateLimited",
+    "AbuseThrottled",
     "ServerError",
     "ServiceUnavailable",
     # WebSocket (lazily imported so `websockets` stays optional)

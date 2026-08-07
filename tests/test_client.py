@@ -4,10 +4,13 @@ These assert the parts a user feels but rarely reads: which exception a status
 maps to, what gets retried, and when pagination stops.
 """
 
+from datetime import datetime, timezone
+
 import httpx
 import pytest
 
 from livetennisapi import (
+    AbuseThrottled,
     AsyncLiveTennisAPI,
     BadRequest,
     LiveTennisAPI,
@@ -152,6 +155,88 @@ class TestErrorMapping:
         assert exc.value.error_code == "ambiguous_name"
         assert "Venus Williams" in exc.value.body["candidates"]
 
+    def test_upgrade_required_names_ultra_for_statistics(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.get_match_statistics(1)
+        assert exc.value.required_tier == "ULTRA"
+
+    def test_upgrade_required_names_ultra_for_rally_and_charting(self):
+        for call in (
+            lambda c: c.list_rally_matches(),
+            lambda c: c.get_rally_match(1),
+            lambda c: c.get_match_rally(1),  # /history/…/rally must NOT read as BASIC
+            lambda c: c.get_charting_player("federer"),
+            lambda c: c.get_charting_match(1),
+            lambda c: c.get_ws_token(),
+        ):
+            client = client_returning(
+                httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+            )
+            with pytest.raises(UpgradeRequired) as exc:
+                call(client)
+            assert exc.value.required_tier == "ULTRA"
+
+    def test_rankings_listing_names_pro_but_per_player_names_ultra(self):
+        """/rankings gates on its parameters: listing (no player) is PRO, the
+        per-player as-of mode is ULTRA — the 403 must name the right one."""
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_rankings(system="atp")
+        assert exc.value.required_tier == "PRO"
+
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_rankings(player=[925, 1137])
+        assert exc.value.required_tier == "ULTRA"
+
+    def test_packages_name_pro_but_non_tape_kinds_and_year_name_ultra(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_history_packages()
+        assert exc.value.required_tier == "PRO"
+
+        for kwargs in ({"kind": "rankings"}, {"kind": "rally"}, {"year": "2025"}):
+            client = client_returning(
+                httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+            )
+            with pytest.raises(UpgradeRequired) as exc:
+                client.list_history_packages(**kwargs)
+            assert exc.value.required_tier == "ULTRA", kwargs
+
+    def test_completed_matches_listing_names_basic(self):
+        """`/matches?status=completed` is gated even though /matches is FREE."""
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_matches(status="completed")
+        assert exc.value.required_tier == "BASIC"
+
+    def test_live_matches_403_names_no_tier(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.list_matches(status="live")
+        assert exc.value.required_tier is None
+
+    def test_tape_names_basic(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.get_match_tape(18953)
+        assert exc.value.required_tier == "BASIC"
+
     def test_rate_limited_exposes_retry_after(self):
         client = client_returning(
             httpx.Response(429, json={"error": "rate_limited"}, headers={"Retry-After": "12"}),
@@ -167,6 +252,64 @@ class TestErrorMapping:
         with pytest.raises(RateLimited) as exc:
             client.get_match(1)
         assert exc.value.retry_after is None
+
+    def test_minute_429_has_no_daily_fields(self):
+        client = client_returning(
+            httpx.Response(429, json={"error": "rate_limited"}, headers={"Retry-After": "7"}),
+            max_retries=0,
+        )
+        with pytest.raises(RateLimited) as exc:
+            client.get_match(1)
+        assert exc.value.scope is None
+        assert exc.value.resets_at is None
+        assert exc.value.limit_per_day is None
+        assert not isinstance(exc.value, AbuseThrottled)
+
+    def test_daily_429_surfaces_scope_limit_and_resets_at(self):
+        """The daily-cap 429 carries the absolute reset instant — an ISO
+        timestamp derived from a local midnight, NOT midnight UTC — and the
+        SDK must hand it over parsed."""
+        client = client_returning(
+            httpx.Response(
+                429,
+                json={
+                    "error": "rate_limited",
+                    "scope": "day",
+                    "limit_per_day": 100,
+                    "resets_at": "2026-08-07T21:00:00Z",
+                },
+            ),
+            max_retries=0,
+        )
+        with pytest.raises(RateLimited) as exc:
+            client.get_match(1)
+        assert exc.value.scope == "day"
+        assert exc.value.limit_per_day == 100
+        assert exc.value.resets_at == datetime(2026, 8, 7, 21, 0, tzinfo=timezone.utc)
+        assert "resets at" in str(exc.value)
+
+    def test_unparseable_resets_at_stays_reachable_in_the_body(self):
+        client = client_returning(
+            httpx.Response(429, json={"error": "rate_limited", "scope": "day", "resets_at": "soon"}),
+            max_retries=0,
+        )
+        with pytest.raises(RateLimited) as exc:
+            client.get_match(1)
+        assert exc.value.resets_at is None
+        assert exc.value.body["resets_at"] == "soon"
+
+    def test_abuse_throttled_is_its_own_type(self):
+        client = client_returning(
+            httpx.Response(429, json={"error": "abuse_throttled", "retry_at_epoch": 1786571000}),
+            max_retries=0,
+        )
+        with pytest.raises(AbuseThrottled) as exc:
+            client.get_match(1)
+        assert isinstance(exc.value, RateLimited)  # except RateLimited still catches it
+        assert exc.value.error_code == "abuse_throttled"
+        assert exc.value.retry_at_epoch == 1786571000
+        assert exc.value.retry_at == datetime.fromtimestamp(1786571000, tz=timezone.utc)
+        assert "fix the retry loop" in str(exc.value)
 
     def test_error_code_is_exposed(self):
         client = client_returning(
@@ -201,6 +344,26 @@ class TestRetries:
         )
         assert client.get_match(1).id == 1
         assert len(client.requests) == 2
+
+    def test_abuse_throttled_is_never_retried(self):
+        """A 24h abuse block cannot clear inside any backoff window — and
+        retrying it is the very behaviour that earns it."""
+        client = client_returning(
+            httpx.Response(429, json={"error": "abuse_throttled", "retry_at_epoch": 1786571000}),
+            max_retries=3,
+        )
+        with pytest.raises(AbuseThrottled):
+            client.get_match(1)
+        assert len(client.requests) == 1
+
+    def test_daily_429_is_never_retried(self):
+        client = client_returning(
+            httpx.Response(429, json={"error": "rate_limited", "scope": "day", "resets_at": "2026-08-07T21:00:00Z"}),
+            max_retries=3,
+        )
+        with pytest.raises(RateLimited):
+            client.get_match(1)
+        assert len(client.requests) == 1
 
     def test_400_is_never_retried(self):
         """A client-side mistake cannot start working — retrying just burns quota."""
@@ -321,6 +484,81 @@ class TestRequests:
         assert params["p1"] == "federer"
         assert params["p2"] == "nadal"
 
+    def test_tape_path_and_sequence(self):
+        client = client_returning(httpx.Response(200, json={}))
+        client.get_match_tape(18953)
+        assert str(client.requests[0].url).startswith(f"{BASE}/history/matches/18953")
+        assert "sequence" not in client.requests[0].url.params
+        client.get_match_tape(18953, sequence="clean")
+        assert client.requests[1].url.params["sequence"] == "clean"
+
+    def test_statistics_path(self):
+        client = client_returning(httpx.Response(200, json={}))
+        client.get_match_statistics(18953)
+        assert str(client.requests[0].url).startswith(f"{BASE}/matches/18953/statistics")
+
+    def test_rankings_params_are_repeated_not_comma_joined(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_rankings(player=[925, 1137], system=["atp", "wta"], as_of="2026-07-01")
+        params = client.requests[0].url.params
+        assert params.get_list("player") == ["925", "1137"]
+        assert params.get_list("system") == ["atp", "wta"]
+        assert params["as_of"] == "2026-07-01"
+
+    def test_rankings_listing_mode_sends_no_player(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_rankings(system="atp", limit=100)
+        params = client.requests[0].url.params
+        assert "player" not in params
+        assert params["system"] == "atp"
+
+    def test_package_paths_and_params(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_history_packages(kind="rankings", year="2025")
+        assert str(client.requests[0].url).startswith(f"{BASE}/history/packages?")
+        assert client.requests[0].url.params["kind"] == "rankings"
+        assert client.requests[0].url.params["year"] == "2025"
+        client.get_history_package("2026-07")
+        assert str(client.requests[1].url).startswith(f"{BASE}/history/packages/2026-07")
+
+    def test_rally_paths_and_filters(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_rally_matches(player="federer", from_="2008-01-01", to="2008-12-31", gender="M")
+        assert str(client.requests[0].url).startswith(f"{BASE}/rally/matches?")
+        params = client.requests[0].url.params
+        assert params["player"] == "federer"
+        assert params["from"] == "2008-01-01"
+        assert params["gender"] == "M"
+        client.get_rally_match(4242, limit=100, offset=200)
+        assert str(client.requests[1].url).startswith(f"{BASE}/rally/matches/4242")
+        assert client.requests[1].url.params["offset"] == "200"
+        client.get_match_rally(18953)
+        assert str(client.requests[2].url).startswith(f"{BASE}/history/matches/18953/rally")
+
+    def test_charting_paths(self):
+        client = client_returning(httpx.Response(200, json={}))
+        client.get_charting_player("sampras", gender="men")
+        assert str(client.requests[0].url).startswith(f"{BASE}/charting/players?")
+        assert client.requests[0].url.params["name"] == "sampras"
+        assert client.requests[0].url.params["gender"] == "men"
+        client.get_charting_match(777)
+        assert str(client.requests[1].url).startswith(f"{BASE}/charting/matches/777")
+
+    def test_ws_token_and_usage_paths(self):
+        client = client_returning(httpx.Response(200, json={}))
+        client.get_ws_token()
+        assert str(client.requests[0].url).startswith(f"{BASE}/ws-token")
+        client.get_usage()
+        assert str(client.requests[1].url).startswith(f"{BASE}/usage")
+
+    def test_not_charted_is_a_distinguishable_404(self):
+        client = client_returning(
+            httpx.Response(404, json={"error": "not_charted"}), max_retries=0
+        )
+        with pytest.raises(NotFound) as exc:
+            client.get_match_rally(18953)
+        assert exc.value.error_code == "not_charted"
+
 
 class TestResponses:
     def test_list_response_is_parsed(self):
@@ -398,6 +636,15 @@ class TestAsyncClient:
                 await client.get_match_analysis(1)
         assert exc.value.required_tier == "ULTRA"
 
+    async def test_async_new_surface_mirrors_sync(self):
+        transport = httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"data": [{"system": "atp", "rank": 1, "previous_rank": 2}]})
+        )
+        async with AsyncLiveTennisAPI("k", transport=transport) as client:
+            page = await client.list_rankings(system="atp")
+        assert page[0].rank == 1
+        assert page[0].previous_rank == 2
+
     async def test_async_pagination(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"data": [{"id": 1}]}))
         async with AsyncLiveTennisAPI("k", transport=transport) as client:
@@ -416,6 +663,11 @@ class TestParity:
             "list_tournaments", "get_tournament",
             "list_archive_matches", "get_archive_match",
             "list_archive_players", "get_archive_career", "get_h2h",
+            "get_match_tape", "get_match_statistics", "list_rankings",
+            "list_history_packages", "get_history_package",
+            "list_rally_matches", "get_rally_match", "get_match_rally",
+            "get_charting_player", "get_charting_match",
+            "get_ws_token", "get_usage",
         }
         for name in endpoints:
             assert hasattr(LiveTennisAPI, name), f"sync client missing {name}"
