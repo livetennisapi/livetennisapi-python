@@ -45,7 +45,7 @@ from __future__ import annotations
 import json
 import random
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, Union
@@ -98,9 +98,16 @@ class ScoreUpdate(Model):
         obj = super().from_dict(data)
         if obj is None:
             return None
-        # The frame carries score fields inline alongside match_id, so the
-        # whole frame doubles as the Score payload.
-        obj.score = Score.from_dict(data)
+        # The wire NESTS the score object — a score frame is
+        # ``{"type": "score", "match_id": N, "score": {sets, games, …}}`` —
+        # and the ULTRA model fields live INSIDE that score object. Parse the
+        # nested object when present; only fall back to reading fields inline
+        # off the frame itself (the pre-1.3.1 assumption) so a flat emitter
+        # still parses instead of yielding an all-None score.
+        if isinstance(obj.score, Mapping):
+            obj.score = Score.from_dict(obj.score)
+        else:
+            obj.score = Score.from_dict(data)
         return obj
 
 

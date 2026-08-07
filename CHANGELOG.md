@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] — 2026-08-07
+
+### Fixed
+- **WebSocket score frames parsed as all-None.** The wire nests the score
+  object — a frame is `{"type": "score", "match_id": N, "score": {sets,
+  games, points, server, is_tiebreak, timestamp, win_probability_p1?,
+  danger?}}` with the ULTRA model fields INSIDE the score object — but
+  `ScoreUpdate.from_dict` built its `Score` from the whole frame, assuming
+  the fields sat inline. On real frames every field of `update.score`
+  (including `sets` and the model fields) came back `None`. The nested
+  object is now parsed when present, with the inline read kept only as a
+  defensive fallback, so a flat emitter still parses rather than yielding
+  an all-None score. `break_point` / `break_point_result` frames are flat
+  on the wire and were never affected.
+
 ## [1.3.0] — 2026-08-07
 
 ### Added

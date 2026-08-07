@@ -127,9 +127,62 @@ class TestSubscribeFrame:
         assert subscribe["signals"] == ["break_point"]
 
 
+class TestScoreFrameShape:
+    """The wire NESTS the score object; 1.3.0 parsed the whole frame instead
+    and every ``update.score`` field came back None on real frames."""
+
+    #: A frame exactly as the server's build_score_frame emits it:
+    #: ``{"type", "match_id", "score": {…}}`` with the ULTRA model fields
+    #: INSIDE the score object.
+    REAL_FRAME = {
+        "type": "score",
+        "match_id": 18953,
+        "score": {
+            "sets": [1, 0],
+            "games": [[6, 3], [4, 2]],
+            "points": ["40", "30"],
+            "server": 1,
+            "is_tiebreak": False,
+            "win_probability_p1": 0.71,
+            "danger": 0.12,
+            "timestamp": "2026-08-07T14:30:00Z",
+        },
+    }
+
+    def test_nested_score_frame_parses(self, monkeypatch):
+        yielded, _ = run_stream(monkeypatch, frames=[self.REAL_FRAME])
+        assert len(yielded) == 1
+        update = yielded[0]
+        assert isinstance(update, ScoreUpdate)
+        assert update.match_id == 18953
+        assert update.score.sets == [1, 0]
+        assert update.score.games_for_set(0) == (6, 4)
+        assert update.score.points == ["40", "30"]
+        assert update.score.server == 1
+        assert isinstance(update.score.timestamp, datetime)
+
+    def test_model_fields_ride_inside_the_nested_score(self, monkeypatch):
+        yielded, _ = run_stream(monkeypatch, frames=[self.REAL_FRAME])
+        assert yielded[0].score.win_probability_p1 == 0.71
+        assert yielded[0].score.danger == 0.12
+
+    def test_nested_score_update_from_dict_directly(self):
+        update = ScoreUpdate.from_dict(self.REAL_FRAME)
+        assert update.score.sets == [1, 0]
+        assert update.score.win_probability_p1 == 0.71
+        # The full frame stays reachable, exactly as received.
+        assert update.raw == self.REAL_FRAME
+
+    def test_flat_frame_still_parses_as_a_fallback(self):
+        # Defensive tolerance for a flat emitter — never an all-None score.
+        update = ScoreUpdate.from_dict({"type": "score", "match_id": 7, "sets": [0, 1]})
+        assert update.match_id == 7
+        assert update.score.sets == [0, 1]
+
+
 class TestFrameDispatch:
     def test_score_frame_yields_score_update(self, monkeypatch):
-        frames = [{"type": "score", "match_id": 1, "sets": [1, 0], "games": [[6], [4]]}]
+        frames = [{"type": "score", "match_id": 1, "score": {"sets": [1, 0], "games": [[6], [4]]}}]
         yielded, _ = run_stream(monkeypatch, frames=frames)
         assert len(yielded) == 1
         assert isinstance(yielded[0], ScoreUpdate)
@@ -160,10 +213,10 @@ class TestFrameDispatch:
 
     def test_mixed_stream_preserves_order_and_types(self, monkeypatch):
         frames = [
-            {"type": "score", "match_id": 1, "sets": [0, 0]},
+            {"type": "score", "match_id": 1, "score": {"sets": [0, 0]}},
             {"type": "break_point", "match_id": 1, "break_points": 1},
             {"type": "break_point_result", "match_id": 1, "outcome": "broken"},
-            {"type": "score", "match_id": 1, "sets": [0, 1]},
+            {"type": "score", "match_id": 1, "score": {"sets": [0, 1]}},
         ]
         yielded, _ = run_stream(monkeypatch, signals=["break_point"], frames=frames)
         assert [type(f) for f in yielded] == [ScoreUpdate, BreakPoint, BreakPointResult, ScoreUpdate]
