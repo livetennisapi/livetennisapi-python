@@ -3,6 +3,66 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-08-07
+
+### Added
+- **The point-by-point tape, typed.** `get_match_tape(match_id, sequence=)`
+  (BASIC, or any History plan) — the chronological score sequence for one
+  match, live matches included. `TapeRow` is a `Score` plus `point_winner`
+  (clean-sequence rows only, where the transition is a single attributable
+  point); `HistoryTape` carries per-set tiebreak final scores (`tiebreaks`),
+  model `profiles` and a typed `TapeMeta` (coverage, point_source, row
+  counts).
+- **In-play statistics.** `get_match_statistics(match_id)` (ULTRA) — aces,
+  double faults, the serve split, hold/break percentages, break points,
+  service and return points, in the API's two deliberately-unmerged families
+  (derived vs measured) with per-family freshness.
+- **Point-in-time rankings.** `list_rankings()` in both modes with both
+  gates: the full published table for one `system` (PRO), and per-player
+  as-of records via `player=` (an id or a list, repeated on the wire, max
+  50 — ULTRA). Typed `RankingRecord` including `previous_rank` (ATP/WTA),
+  `rank_movement` (ITF) and `rating` (UTR).
+- **Rally construction and charting** (ULTRA). `list_rally_matches()` /
+  `get_rally_match()` over the charted corpus's own id space,
+  `get_match_rally()` by OUR match id (404 `not_charted` stays
+  distinguishable from "no such match"), `get_charting_player()` /
+  `get_charting_match()` for the Match Charting Project stat families.
+  `RallyPoint` exposes the charter's verbatim string as `.notation` (the
+  wire calls it `raw`, which every model already uses for its payload).
+- **Bulk packages.** `list_history_packages(kind=, year=)` and
+  `get_history_package(period, kind=)` (PRO; non-tape kinds and the `year=`
+  archive listing are ULTRA).
+- **Push-feed token.** `get_ws_token()` (ULTRA) — typed `WSToken` with
+  `ws_url`, `expires_in` and the channel vocabulary
+  (`match_channel(match_id)`, `slate_channel` — `slate:all`).
+- **Usage.** `get_usage()` — your tier, limits, today's calls (current to
+  the second) and a 30-day history; the read itself is quota-exempt.
+- **Errors, sharpened.** The abuse throttle is its own type:
+  `AbuseThrottled` (a `RateLimited`, so existing handlers keep working) with
+  `.retry_at_epoch` / `.retry_at` — and it is never auto-retried, since the
+  retry loop is what earns the 24h block. The daily-cap 429 now surfaces
+  `.scope`, `.limit_per_day` and `.resets_at` (parsed; an absolute instant
+  derived from a local midnight — never assume a UTC midnight) and is not
+  auto-retried either.
+- **Parameter-aware 403s.** `UpgradeRequired.required_tier` now understands
+  endpoints gated by their parameters: `/rankings` names PRO for the listing
+  and ULTRA for per-player mode, `/history/packages` names ULTRA for
+  non-tape kinds and `year=`, and `/matches?status=completed` names BASIC.
+
+### Changed
+- **WebSocket score frames carry the model fields.** `win_probability_p1`
+  and `danger` arrive on ULTRA score frames over the stream exactly as on
+  REST — a `None` means the model had no output for that state, not that
+  the feed withholds them. Docs saying otherwise were wrong and are gone.
+- README now states the current quota grid (2026-08-06: FREE 100/day,
+  BASIC 1,000/day, PRO 10,000/day, ULTRA 500,000/day) with FREE polling
+  guidance, the full endpoint/tier table, and the five-tour coverage
+  phrasing (ATP, WTA, Challenger, ITF and juniors).
+
+### Notes
+- **Fully backwards compatible.** Every addition is a new method, a new
+  optional keyword argument, a new optional field, or an exception subclass.
+
 ## [1.2.0] — 2026-08-03
 
 ### Added
@@ -103,28 +163,6 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   Removed; ruff's `target-version` already enforces 3.9-compatible syntax.
 
 ## [1.0.0] — 2026-07-19
-## [1.0.0] — 2026-07-19
-
-First release.
-
-### Added
-- `LiveTennisAPI` and `AsyncLiveTennisAPI` covering all 12 REST endpoints.
-- `LiveScoreStream` — reconnecting WebSocket live-score feed (ULTRA).
-- `livetennis` CLI: `health`, `live`, `match`, `score`, `players`, `fixtures`,
-  `history`, `watch`.
-- Typed error hierarchy. `UpgradeRequired` carries `.required_tier`;
-  `RateLimited` carries `.retry_after`.
-- Automatic retries on 429 and 5xx only, honouring `Retry-After` with
-  exponential backoff and jitter. Other 4xx are never retried.
-- `paginate()` for walking list endpoints on both clients.
-- Full type hints and a `py.typed` marker.
-
-### Notes
-- **Models never reject unknown fields.** The API ships additive changes within
-  `v1`, so unrecognised fields are preserved in `.raw` and readable as
-  attributes — a new server field works without upgrading this package.
-- `Score.games` is **player-major** (`[games_p1, games_p2]`, each a per-set
-  list). `Score.games_for_set()` reads it safely.
 
 First release.
 
