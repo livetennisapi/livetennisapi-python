@@ -139,7 +139,7 @@ class RateLimited(APIStatusError):
     - the daily cap (``scope == "day"``) — the body carries
       ``limit_per_day`` and ``resets_at``, the absolute instant the day
       quota resets (an ISO-8601 timestamp; it is derived from a local
-      midnight, so never assume midnight UTC). :attr:`resets_at` parses it.
+      midnight, so never assume a UTC midnight). :attr:`resets_at` parses it.
 
     A third shape, the abuse throttle, is raised as the
     :class:`AbuseThrottled` subclass.

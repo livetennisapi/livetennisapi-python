@@ -267,7 +267,7 @@ class TestErrorMapping:
 
     def test_daily_429_surfaces_scope_limit_and_resets_at(self):
         """The daily-cap 429 carries the absolute reset instant — an ISO
-        timestamp derived from a local midnight, NOT midnight UTC — and the
+        timestamp derived from a local midnight, not a UTC midnight — and the
         SDK must hand it over parsed."""
         client = client_returning(
             httpx.Response(
