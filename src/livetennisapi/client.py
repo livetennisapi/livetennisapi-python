@@ -27,15 +27,24 @@ from .models import (
     ArchiveCareer,
     ArchiveMatch,
     ArchivePlayerBio,
+    ChartingMatch,
+    ChartingPlayer,
     Event,
     Fixture,
     HeadToHead,
+    HistoryPackage,
+    HistoryTape,
     Market,
     Match,
+    MatchStatistics,
     Page,
     Player,
+    RallyMatch,
+    RankingRecord,
     Score,
     Tournament,
+    Usage,
+    WSToken,
 )
 
 __all__ = ["LiveTennisAPI", "AsyncLiveTennisAPI"]
@@ -112,13 +121,13 @@ class LiveTennisAPI(_BaseClient):
                 time.sleep(self._backoff(attempt, None))
                 continue
 
-            if self._should_retry(response.status_code) and attempt < self.max_retries:
+            if self._retryable(response) and attempt < self.max_retries:
                 from ._base import _retry_after_seconds
 
                 time.sleep(self._backoff(attempt, _retry_after_seconds(response.headers)))
                 continue
 
-            self._raise_for_status(response, path)
+            self._raise_for_status(response, path, params)
             return self._decode(response)
 
         if last:
@@ -375,6 +384,192 @@ class LiveTennisAPI(_BaseClient):
         """
         return HeadToHead.from_dict(self._request("/h2h", {"p1": p1, "p2": p2}))
 
+    def get_match_tape(self, match_id: int, *, sequence: str | None = None) -> HistoryTape | None:
+        """The point-by-point tape for one match. **BASIC, or any History plan.**
+
+        Works on a LIVE match too — the tape is assembled from whatever has
+        been committed so far, so this is how you read the point-by-point
+        history of a match in progress. ``sequence="raw"`` (the default) is
+        every row we committed, deliberately non-monotonic (independent
+        sources race, and a higher-trust one may correct a lower-trust one
+        backwards); ``sequence="clean"`` collapses to one row per distinct
+        score state — and only clean rows carry
+        :attr:`~livetennisapi.TapeRow.point_winner`. Check ``meta.coverage``
+        and ``meta.point_source`` before backtesting; per-set tiebreak final
+        scores ride along in ``tiebreaks``.
+        """
+        return HistoryTape.from_dict(
+            self._request(f"/history/matches/{match_id}", self._params({"sequence": sequence}))
+        )
+
+    def get_match_statistics(self, match_id: int) -> MatchStatistics | None:
+        """In-play statistics for one match. **ULTRA.**
+
+        Aces, double faults, the serve split, hold/break percentages, break
+        points and service/return points — in two families that are
+        deliberately not merged (derived vs measured; see
+        :class:`~livetennisapi.MatchStatistics`). A match we hold nothing for
+        answers 200 with null ``players``, not 404.
+        """
+        return MatchStatistics.from_dict(self._request(f"/matches/{match_id}/statistics"))
+
+    def list_rankings(
+        self,
+        *,
+        player: int | list[int] | None = None,
+        system: str | list[str] | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        """Point-in-time rankings, in two modes with two gates.
+
+        - **Listing (PRO)** — omit ``player`` and name exactly one ``system``:
+          the full published table in rank order, the newest week at or before
+          ``as_of``. Rows carry ``player_name`` as published and a null
+          ``player_id`` for players outside our roster, so the table has no
+          silent holes. ``utr`` has no listing (a rating, not a ranking).
+        - **Per-player as-of (ULTRA)** — pass ``player`` (an id or a list,
+          repeated on the wire, max 50): per system, the newest record
+          effective ON OR BEFORE ``as_of`` — never one dated after it.
+
+        ``system`` is ``atp`` | ``wta`` | ``itf_jt`` | ``itf_mt`` | ``itf_wt``
+        | ``utr``; ``as_of`` is ``YYYY-MM-DD`` (omit for the latest known).
+        Read ``meta.coverage`` before trusting an empty result — ITF and UTR
+        history begins 2026-07-29 and cannot be reconstructed earlier.
+        """
+        return _page(
+            self._request(
+                "/rankings",
+                self._params({"player": player, "system": system, "as_of": as_of, "limit": limit, "offset": offset}),
+            ),
+            RankingRecord,
+        )
+
+    def list_history_packages(self, *, kind: str | None = None, year: str | None = None) -> Page:
+        """Pre-built monthly bulk packages, newest period first. **PRO.**
+
+        ``kind`` picks the package family — ``"tape"`` (the default:
+        point-by-point match tapes), or a non-tape family such as
+        ``"rankings"`` or ``"rally"``, which need **ULTRA**. ``year="YYYY"``
+        lists every published month of that year (the year-archive listing —
+        ULTRA, History Business, or a 1-year package). Coverage is not a
+        contiguous run of months: treat this listing as the authoritative set
+        of months that exist.
+        """
+        return _page(
+            self._request("/history/packages", self._params({"kind": kind, "year": year})),
+            HistoryPackage,
+        )
+
+    def get_history_package(self, period: str, *, kind: str | None = None) -> HistoryPackage | None:
+        """One monthly package's manifest — files, sizes and checksums. **PRO.**
+
+        ``period`` is ``YYYY-MM``. Non-tape ``kind`` values need **ULTRA**.
+        The manifest's ``files`` name the downloadable artifacts; the files
+        themselves stream from the same URL with ``?format=jsonl|csv``.
+        """
+        return HistoryPackage.from_dict(self._request(f"/history/packages/{period}", self._params({"kind": kind})))
+
+    def list_rally_matches(
+        self,
+        *,
+        player: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        surface: str | None = None,
+        gender: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        """Charted matches with shot-by-shot data, newest first. **ULTRA.**
+
+        Rally construction is the layer below the tape: the tape says what the
+        score became after each point, this says how the point was played. It
+        has its OWN id space — the charted corpus reaches back decades and
+        concentrates on the biggest events. Ask this endpoint for the
+        authoritative coverage list rather than assuming a match is charted.
+        ``player`` is a substring match on either player name; ``gender`` is
+        ``M`` | ``W``.
+        """
+        return _page(
+            self._request(
+                "/rally/matches",
+                self._params(
+                    {
+                        "player": player,
+                        "from": from_,
+                        "to": to,
+                        "surface": surface,
+                        "gender": gender,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
+            RallyMatch,
+        )
+
+    def get_rally_match(self, rally_match_id: int, *, limit: int = 50, offset: int = 0) -> RallyMatch | None:
+        """One charted match with its points, in play order. **ULTRA.**
+
+        Paged with ``limit``/``offset`` over the points; ``meta.total`` is the
+        match's full point count.
+        """
+        return RallyMatch.from_dict(
+            self._request(f"/rally/matches/{rally_match_id}", self._params({"limit": limit, "offset": offset}))
+        )
+
+    def get_match_rally(self, match_id: int, *, limit: int = 50, offset: int = 0) -> RallyMatch | None:
+        """Rally construction addressed by OUR match id. **ULTRA.**
+
+        Resolved through the optional link between the two id spaces. Answers
+        404 with ``error_code == "not_charted"`` when we hold the match but
+        nobody charted it — deliberately distinct from "no such match",
+        because most of our matches are not charted.
+        """
+        return RallyMatch.from_dict(
+            self._request(f"/history/matches/{match_id}/rally", self._params({"limit": limit, "offset": offset}))
+        )
+
+    def get_charting_player(self, name: str, *, gender: str | None = None) -> ChartingPlayer | None:
+        """Career shot-level charting aggregate for one player. **ULTRA.**
+
+        ``name`` (min 3 chars) is the key; a fragment matching more than one
+        charted person raises :class:`~livetennisapi.BadRequest` with the
+        candidate list, and ``gender="men"`` / ``"women"`` disambiguates.
+        """
+        return ChartingPlayer.from_dict(
+            self._request("/charting/players", self._params({"name": name, "gender": gender}))
+        )
+
+    def get_charting_match(self, charting_match_id: int) -> ChartingMatch | None:
+        """One charted match, every stat family for both players. **ULTRA.**"""
+        return ChartingMatch.from_dict(self._request(f"/charting/matches/{charting_match_id}"))
+
+    def get_ws_token(self) -> WSToken | None:
+        """Mint a connection token for the high-fan-out push feed. **ULTRA.**
+
+        Returns the push WebSocket URL plus the channel vocabulary —
+        ``match:{id}`` per-match streams and ``slate:all`` for every live
+        score frame (:meth:`~livetennisapi.WSToken.match_channel` and
+        :attr:`~livetennisapi.WSToken.slate_channel` read them). Score frames
+        on the push feed carry the same ULTRA model fields as REST
+        (``win_probability_p1``, ``danger``). The token is short-lived — mint
+        a fresh one on reconnect.
+        """
+        return WSToken.from_dict(self._request("/ws-token"))
+
+    def get_usage(self) -> Usage | None:
+        """Your own usage vs quota. Any tier, and the read itself is quota-exempt.
+
+        Today's calls are current to the second, plus a 30-day history. The
+        per-minute window lives on the ``X-RateLimit-*`` headers of every
+        response; the daily reset instant is only ever stated by the daily-429
+        body (``resets_at``), not here.
+        """
+        return Usage.from_dict(self._request("/usage"))
+
     # -- pagination -----------------------------------------------------------
 
     def paginate(self, method: str, /, *args: Any, page_size: int = _MAX_LIMIT, **kwargs: Any) -> Iterator[Any]:
@@ -441,13 +636,13 @@ class AsyncLiveTennisAPI(_BaseClient):
                 await asyncio.sleep(self._backoff(attempt, None))
                 continue
 
-            if self._should_retry(response.status_code) and attempt < self.max_retries:
+            if self._retryable(response) and attempt < self.max_retries:
                 from ._base import _retry_after_seconds
 
                 await asyncio.sleep(self._backoff(attempt, _retry_after_seconds(response.headers)))
                 continue
 
-            self._raise_for_status(response, path)
+            self._raise_for_status(response, path, params)
             return self._decode(response)
 
         if last:
@@ -618,6 +813,95 @@ class AsyncLiveTennisAPI(_BaseClient):
 
     async def get_h2h(self, p1: str, p2: str) -> HeadToHead | None:
         return HeadToHead.from_dict(await self._request("/h2h", {"p1": p1, "p2": p2}))
+
+    async def get_match_tape(self, match_id: int, *, sequence: str | None = None) -> HistoryTape | None:
+        return HistoryTape.from_dict(
+            await self._request(f"/history/matches/{match_id}", self._params({"sequence": sequence}))
+        )
+
+    async def get_match_statistics(self, match_id: int) -> MatchStatistics | None:
+        return MatchStatistics.from_dict(await self._request(f"/matches/{match_id}/statistics"))
+
+    async def list_rankings(
+        self,
+        *,
+        player: int | list[int] | None = None,
+        system: str | list[str] | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        return _page(
+            await self._request(
+                "/rankings",
+                self._params({"player": player, "system": system, "as_of": as_of, "limit": limit, "offset": offset}),
+            ),
+            RankingRecord,
+        )
+
+    async def list_history_packages(self, *, kind: str | None = None, year: str | None = None) -> Page:
+        return _page(
+            await self._request("/history/packages", self._params({"kind": kind, "year": year})),
+            HistoryPackage,
+        )
+
+    async def get_history_package(self, period: str, *, kind: str | None = None) -> HistoryPackage | None:
+        return HistoryPackage.from_dict(
+            await self._request(f"/history/packages/{period}", self._params({"kind": kind}))
+        )
+
+    async def list_rally_matches(
+        self,
+        *,
+        player: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        surface: str | None = None,
+        gender: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Page:
+        return _page(
+            await self._request(
+                "/rally/matches",
+                self._params(
+                    {
+                        "player": player,
+                        "from": from_,
+                        "to": to,
+                        "surface": surface,
+                        "gender": gender,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
+            ),
+            RallyMatch,
+        )
+
+    async def get_rally_match(self, rally_match_id: int, *, limit: int = 50, offset: int = 0) -> RallyMatch | None:
+        return RallyMatch.from_dict(
+            await self._request(f"/rally/matches/{rally_match_id}", self._params({"limit": limit, "offset": offset}))
+        )
+
+    async def get_match_rally(self, match_id: int, *, limit: int = 50, offset: int = 0) -> RallyMatch | None:
+        return RallyMatch.from_dict(
+            await self._request(f"/history/matches/{match_id}/rally", self._params({"limit": limit, "offset": offset}))
+        )
+
+    async def get_charting_player(self, name: str, *, gender: str | None = None) -> ChartingPlayer | None:
+        return ChartingPlayer.from_dict(
+            await self._request("/charting/players", self._params({"name": name, "gender": gender}))
+        )
+
+    async def get_charting_match(self, charting_match_id: int) -> ChartingMatch | None:
+        return ChartingMatch.from_dict(await self._request(f"/charting/matches/{charting_match_id}"))
+
+    async def get_ws_token(self) -> WSToken | None:
+        return WSToken.from_dict(await self._request("/ws-token"))
+
+    async def get_usage(self) -> Usage | None:
+        return Usage.from_dict(await self._request("/usage"))
 
     async def paginate(
         self, method: str, /, *args: Any, page_size: int = _MAX_LIMIT, **kwargs: Any

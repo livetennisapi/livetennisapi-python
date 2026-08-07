@@ -8,7 +8,10 @@
 
 The feed pushes a ``score`` frame whenever a subscribed match's score changes,
 plus a ``ping`` heartbeat roughly every 15 seconds. Heartbeats are consumed
-internally and never yielded; iterate and you see score updates only.
+internally and never yielded; iterate and you see score updates only. Score
+frames carry the same ULTRA model fields as REST — ``win_probability_p1`` and
+``danger`` ride along on every frame (null means the model had no output for
+that state, not that the field is missing).
 
 Topics
 ------
@@ -79,7 +82,13 @@ _FATAL = {
 
 @dataclass
 class ScoreUpdate(Model):
-    """One ``score`` frame."""
+    """One ``score`` frame.
+
+    ``score`` is the same :class:`~livetennisapi.Score` shape REST returns,
+    model fields included: ``win_probability_p1`` and ``danger`` arrive on the
+    WebSocket frames too (ULTRA). A null model field means the model had no
+    output for that state — never that the feed withholds them.
+    """
 
     match_id: int | None = None
     score: Score | None = None

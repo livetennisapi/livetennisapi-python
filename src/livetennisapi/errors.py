@@ -14,6 +14,7 @@ the raw response, but the common cases are distinguishable by type alone:
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "UpgradeRequired",
     "NotFound",
     "RateLimited",
+    "AbuseThrottled",
     "ServerError",
     "ServiceUnavailable",
     "APIConnectionError",
@@ -124,11 +126,23 @@ class NotFound(APIStatusError):
 
 
 class RateLimited(APIStatusError):
-    """429 — the tier's rate limit window was exceeded.
+    """429 — a rate limit was exceeded.
 
     ``retry_after`` is the number of seconds the API asked you to wait, parsed
     from the ``Retry-After`` header. It is ``None`` when the header is absent
     or unparseable.
+
+    Two windows share this status code, told apart by ``scope``:
+
+    - the per-minute window (``scope`` is ``None``) — wait ``retry_after``
+      and go again;
+    - the daily cap (``scope == "day"``) — the body carries
+      ``limit_per_day`` and ``resets_at``, the absolute instant the day
+      quota resets (an ISO-8601 timestamp; it is derived from a local
+      midnight, so never assume midnight UTC). :attr:`resets_at` parses it.
+
+    A third shape, the abuse throttle, is raised as the
+    :class:`AbuseThrottled` subclass.
     """
 
     status_code = 429
@@ -137,11 +151,79 @@ class RateLimited(APIStatusError):
         super().__init__(*args, **kwargs)
         self.retry_after = retry_after
 
+    def _body_value(self, key: str) -> Any:
+        if isinstance(self.body, Mapping):
+            return self.body.get(key)
+        return None
+
+    @property
+    def scope(self) -> str | None:
+        """``"day"`` when the DAILY cap tripped; ``None`` for the minute window."""
+        value = self._body_value("scope")
+        return value if isinstance(value, str) else None
+
+    @property
+    def limit_per_day(self) -> int | None:
+        """The tier's daily quota, from the daily-429 body."""
+        value = self._body_value("limit_per_day")
+        return value if isinstance(value, int) else None
+
+    @property
+    def resets_at(self) -> datetime | None:
+        """When the daily quota resets — an absolute instant, parsed.
+
+        ``None`` unless this is the daily-cap 429 (or the body's value was
+        unparseable, in which case the raw string is still in
+        ``exc.body["resets_at"]``).
+        """
+        value = self._body_value("resets_at")
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
     def __str__(self) -> str:
         base = super().__str__()
+        if self.scope == "day" and self.resets_at is not None:
+            return f"{base} — daily quota exhausted, resets at {self.resets_at.isoformat()}"
         if self.retry_after is not None:
             return f"{base} — retry after {self.retry_after:g}s"
         return base
+
+
+class AbuseThrottled(RateLimited):
+    """429 ``abuse_throttled`` — a 24-hour block for chronic over-cap clients.
+
+    This is not the minute window: the API has seen this key hammer through
+    its quota repeatedly (usually a retry loop that never backs off) and has
+    blocked it for a day. ``retry_at_epoch`` is the Unix timestamp when the
+    block lifts. Fix the retry loop before then — reconnect storms are what
+    earn this response in the first place. The SDK never auto-retries it.
+    """
+
+    status_code = 429
+
+    @property
+    def retry_at_epoch(self) -> int | None:
+        """Unix timestamp when the block lifts, from the response body."""
+        value = self._body_value("retry_at_epoch")
+        return value if isinstance(value, int) else None
+
+    @property
+    def retry_at(self) -> datetime | None:
+        """:attr:`retry_at_epoch` as an aware UTC datetime."""
+        epoch = self.retry_at_epoch
+        if epoch is None:
+            return None
+        return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+    def __str__(self) -> str:
+        base = APIStatusError.__str__(self)
+        if self.retry_at is not None:
+            return f"{base} — abuse-throttled until {self.retry_at.isoformat()}; fix the retry loop"
+        return f"{base} — abuse-throttled for 24h; fix the retry loop"
 
 
 class ServerError(APIStatusError):
