@@ -63,6 +63,15 @@ $ livetennis watch --match 18953     # live WebSocket stream
 
 ## Live score feed (ULTRA)
 
+The SDK ships **two** streamers, both ULTRA, both yielding the same
+`ScoreUpdate` objects:
+
+- **`LiveScoreStream`** — the native `/ws` feed. Zero setup beyond the key;
+  the best quick start.
+- **`PushStream`** — the high-fan-out push feed. Token-authenticated, no
+  shared connection ceiling, built for scale — **recommended for continuous
+  / production streaming**. See [below](#the-push-feed-pushstream).
+
 ```python
 from livetennisapi import LiveScoreStream
 
@@ -106,11 +115,45 @@ Score frames carry the same ULTRA model fields as REST — `update.score.win_pro
 and `update.score.danger` are on every frame. A `None` means the model had no
 output for that state, never that the feed withholds them.
 
-### The push feed (`get_ws_token`)
+### The push feed (`PushStream`)
 
-For high-fan-out consumers there is a second, token-authenticated push
-endpoint. `get_ws_token()` (ULTRA) mints a short-lived token plus the
-connection details:
+For continuous production streaming, use the token-authenticated push feed —
+it has no shared connection ceiling and is built for scale. `PushStream` does
+the whole dance for you: it mints a short-lived token via `/ws-token`, connects
+to the push endpoint, subscribes, answers the server's heartbeats, and on every
+reconnect mints a **fresh** token before re-subscribing:
+
+```python
+from livetennisapi import PushStream
+
+with PushStream() as stream:              # every live match (slate:all)
+    for update in stream:
+        print(update.match_id, update.score.sets)
+
+with PushStream(match_ids=[18953]) as stream:   # one specific match
+    ...
+```
+
+`ScoreUpdate` frames are identical to the native feed's — nested score, ULTRA
+model fields and all — so switching streamers changes nothing downstream.
+Frames are complete-state and best-effort with no replay: a missed frame
+self-corrects on the next one, so there is no catch-up to run. Auth and tier
+refusals surface from the token mint as the SDK's normal exceptions
+(`UpgradeRequired` naming ULTRA, and so on) and are never retried — and
+neither are deterministic connect/subscribe refusals: an unknown or
+unpermitted channel raises `PushRefused` or `Unauthorized` instead of
+reconnect-looping (every doomed reconnect would mint a token against your
+quota). Reads are bounded by the server's advertised heartbeat cadence, so a
+silently dead connection is detected and reconnected rather than hanging the
+stream forever.
+
+Honestly stated: the push feed carries **score frames only** today — the
+native streamer's opt-in `break_point` signal frames don't exist there yet.
+If you need break-point / divergence signals, use `LiveScoreStream`. Frame
+types newer than this SDK are still yielded, as a generic `PushFrame`.
+
+Prefer to speak the protocol yourself? `get_ws_token()` (ULTRA) hands you the
+raw connection details:
 
 ```python
 tok = client.get_ws_token()
@@ -119,8 +162,7 @@ tok.match_channel(18953)    # "match:18953"
 tok.slate_channel           # "slate:all" — every live score frame
 ```
 
-Frames are the same allowlist score objects the polling endpoints return.
-Mint a fresh token on reconnect.
+Mint a fresh token on reconnect — tokens expire with the connection.
 
 ## Endpoints and tiers
 

@@ -30,6 +30,8 @@ __all__ = [
     "ServiceUnavailable",
     "APIConnectionError",
     "APITimeoutError",
+    "MissingDependencyError",
+    "PushRefused",
 ]
 
 
@@ -43,6 +45,32 @@ class APIConnectionError(LiveTennisAPIError):
 
 class APITimeoutError(APIConnectionError):
     """The request exceeded the configured timeout."""
+
+
+class MissingDependencyError(LiveTennisAPIError):
+    """An optional dependency the requested feature needs is not installed.
+
+    Raised before any network traffic and never retried — reconnecting cannot
+    install a package. The message names the exact install command, e.g.
+    ``pip install "livetennisapi[ws]"`` for the WebSocket streamers.
+    """
+
+
+class PushRefused(LiveTennisAPIError):
+    """The push feed deterministically refused a connect or subscribe command.
+
+    The server answered the handshake with a non-temporary error reply — an
+    unknown channel name, a duplicate subscription, a malformed command.
+    Repeating the identical handshake cannot succeed, so the stream raises
+    instead of reconnecting (each reconnect would mint a fresh token, a real
+    REST call, against a refusal that can never clear). ``code`` is the
+    server's numeric error code when it sent one.
+    """
+
+    def __init__(self, message: str, *, code: int | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
 
 
 class APIStatusError(LiveTennisAPIError):
