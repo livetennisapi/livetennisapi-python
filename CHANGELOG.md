@@ -3,6 +3,56 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-08-16
+
+### Added
+- **`PushStream` — a client for the high-fan-out push feed.** The second of
+  the SDK's two streamers, recommended for continuous / production streaming
+  (no shared connection ceiling). It mints a short-lived token via
+  `/ws-token`, connects to the push endpoint, subscribes — the whole slate
+  (`slate:all`, the default) or specific matches (`match_ids=[…]`) — answers
+  server heartbeats, and reconnects with backoff, minting a **fresh** token
+  on every reconnect (tokens are never reused). Ergonomics mirror
+  `LiveScoreStream`: same constructor shape, iterate for frames, context
+  manager, `close()`. `score` frames are yielded as the same `ScoreUpdate`
+  the native feed produces (nested score, ULTRA model fields included);
+  frame types newer than this SDK are yielded as a generic `PushFrame`
+  rather than dropped. Auth/tier refusals surface from the token mint as
+  the SDK's normal exceptions — an ULTRA gate raises `UpgradeRequired`
+  naming the tier — and are never retried; neither are the abuse throttle
+  and the daily cap, which hold for hours; nor are deterministic
+  connect/subscribe refusals — an unknown or unpermitted channel raises the
+  new `PushRefused` (or `Unauthorized`) immediately rather than
+  reconnect-looping, since every doomed reconnect would mint a token against
+  the daily quota (only error replies the server itself marks `temporary`
+  are retried, and when reconnect attempts run out the terminal
+  `APIConnectionError` chains the last underlying failure as its
+  `__cause__`). A per-minute rate-limited mint honours the server's
+  `Retry-After` before reconnecting, the same rule as the REST client's
+  backoff. Steady-state reads are bounded by twice the ping cadence the
+  connect reply advertises (60s fallback), so a half-open TCP connection is
+  treated as dead and reconnected instead of blocking the stream forever.
+  Newline-batched messages are always drained in full — a publication or
+  server ping packed into the same message as a handshake ack is never
+  dropped or left unanswered. The push feed carries **score frames only**
+  today: the native streamer's opt-in `break_point` signal frames do not
+  exist there yet.
+- `PushFrame` and the `PushStreamFrame` union are exported from the package
+  (lazily, like the rest of the WebSocket surface, so `websockets` stays
+  optional).
+- New typed exceptions: `PushRefused` (a deterministic push-feed
+  connect/subscribe refusal; carries the server's numeric `code`) and
+  `MissingDependencyError` (an optional extra is not installed). Both
+  streamers now raise `MissingDependencyError` — never retried, and before
+  any REST traffic — when the `websockets` package is missing, instead of a
+  base `LiveTennisAPIError` that the reconnect loop would retry forever.
+
+### Notes
+- **Fully backwards compatible.** The native `LiveScoreStream` is untouched
+  apart from the typed (and now non-retried) missing-`websockets` error —
+  a subclass of the `LiveTennisAPIError` it raised before; `PushStream` is
+  additive.
+
 ## [1.3.2] — 2026-08-16
 
 ### Fixed

@@ -15,7 +15,7 @@ Documentation: https://docs.livetennisapi.com
 
 from __future__ import annotations
 
-__version__ = "1.3.2"
+__version__ = "1.4.0"
 
 from .client import AsyncLiveTennisAPI, LiveTennisAPI
 from .errors import (
@@ -25,7 +25,9 @@ from .errors import (
     APITimeoutError,
     BadRequest,
     LiveTennisAPIError,
+    MissingDependencyError,
     NotFound,
+    PushRefused,
     RateLimited,
     ServerError,
     ServiceUnavailable,
@@ -112,21 +114,31 @@ __all__ = [
     "AbuseThrottled",
     "ServerError",
     "ServiceUnavailable",
+    "MissingDependencyError",
+    "PushRefused",
     # WebSocket (lazily imported so `websockets` stays optional)
     "LiveScoreStream",
     "ScoreUpdate",
     "BreakPoint",
     "BreakPointResult",
     "StreamFrame",
+    "PushStream",
+    "PushFrame",
+    "PushStreamFrame",
 ]
 
 _WS_EXPORTS = ("LiveScoreStream", "ScoreUpdate", "BreakPoint", "BreakPointResult", "StreamFrame")
+_PUSH_EXPORTS = ("PushStream", "PushFrame", "PushStreamFrame")
 
 
 def __getattr__(name: str):
-    """Expose the WebSocket client lazily so ``websockets`` stays optional."""
+    """Expose the WebSocket clients lazily so ``websockets`` stays optional."""
     if name in _WS_EXPORTS:
         from . import ws
 
         return getattr(ws, name)
+    if name in _PUSH_EXPORTS:
+        from . import push
+
+        return getattr(push, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

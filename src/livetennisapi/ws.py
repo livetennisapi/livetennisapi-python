@@ -55,6 +55,7 @@ from ._base import _BaseClient
 from .errors import (
     APIConnectionError,
     LiveTennisAPIError,
+    MissingDependencyError,
     ServiceUnavailable,
     Unauthorized,
     UpgradeRequired,
@@ -228,8 +229,10 @@ class LiveScoreStream(_BaseClient):
     def _connect(self) -> Any:
         try:
             from websockets.sync.client import connect
-        except ImportError as exc:  # pragma: no cover
-            raise LiveTennisAPIError(
+        except ImportError as exc:
+            # Typed so listen() raises instead of retrying forever: the
+            # package will not appear between reconnect attempts.
+            raise MissingDependencyError(
                 "the WebSocket feed needs the 'websockets' package — install it with: pip install \"livetennisapi[ws]\""
             ) from exc
 
@@ -343,7 +346,7 @@ class LiveScoreStream(_BaseClient):
                         self._raise_frame_error(frame)
                     # 'ping' and 'subscribed' are protocol noise — swallow them.
 
-            except (Unauthorized, UpgradeRequired, ServiceUnavailable):
+            except (Unauthorized, UpgradeRequired, ServiceUnavailable, MissingDependencyError):
                 raise  # reconnecting cannot fix any of these
             except LiveTennisAPIError:
                 if not self.auto_reconnect or self._closed:
