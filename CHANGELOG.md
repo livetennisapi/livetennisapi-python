@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] — 2026-08-16
+
+### Fixed
+- History-package docstrings told the truth about only two of the four
+  package kinds: they implied every non-tape ``kind`` needs ULTRA and that
+  every ``period`` is ``YYYY-MM``. Corrected — ``rankings``/``rally`` are
+  ULTRA, ``archive`` rides the tape entitlement, and the yearly kinds
+  (``rally``, ``archive``) take a bare ``YYYY`` period.
+
 ## [1.3.1] — 2026-08-07
 
 ### Fixed

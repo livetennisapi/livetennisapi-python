@@ -450,8 +450,10 @@ class LiveTennisAPI(_BaseClient):
         """Pre-built monthly bulk packages, newest period first. **PRO.**
 
         ``kind`` picks the package family — ``"tape"`` (the default:
-        point-by-point match tapes), or a non-tape family such as
-        ``"rankings"`` or ``"rally"``, which need **ULTRA**. ``year="YYYY"``
+        point-by-point match tapes), ``"rankings"`` (as-of ranking records,
+        **ULTRA**), ``"rally"`` (the charted rally corpus as yearly exports,
+        **ULTRA**), or ``"archive"`` (the 1968-2022 results archive as yearly
+        exports — same entitlement as the tape packages). ``year="YYYY"``
         lists every published month of that year (the year-archive listing —
         ULTRA, History Business, or a 1-year package). Coverage is not a
         contiguous run of months: treat this listing as the authoritative set
@@ -465,7 +467,10 @@ class LiveTennisAPI(_BaseClient):
     def get_history_package(self, period: str, *, kind: str | None = None) -> HistoryPackage | None:
         """One monthly package's manifest — files, sizes and checksums. **PRO.**
 
-        ``period`` is ``YYYY-MM``. Non-tape ``kind`` values need **ULTRA**.
+        ``period`` is ``YYYY-MM`` — except for the yearly kinds
+        (``"rally"``, ``"archive"``), whose period is a bare ``YYYY``.
+        ``"rankings"`` and ``"rally"`` need **ULTRA**; ``"archive"`` rides
+        the tape entitlement.
         The manifest's ``files`` name the downloadable artifacts; the files
         themselves stream from the same URL with ``?format=jsonl|csv``.
         """
