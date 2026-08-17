@@ -15,7 +15,7 @@ Documentation: https://docs.livetennisapi.com
 
 from __future__ import annotations
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 from .client import AsyncLiveTennisAPI, LiveTennisAPI
 from .errors import (
@@ -45,6 +45,7 @@ from .models import (
     Event,
     Fixture,
     HeadToHead,
+    HistoryCoverage,
     HistoryPackage,
     HistoryTape,
     ListMeta,
@@ -103,6 +104,7 @@ __all__ = [
     "ChartingPlayer",
     "ChartingMatch",
     "HistoryPackage",
+    "HistoryCoverage",
     "WSToken",
     "Usage",
     # errors
