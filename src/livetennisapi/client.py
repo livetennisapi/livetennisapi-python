@@ -34,11 +34,13 @@ from .models import (
     HeadToHead,
     HistoryPackage,
     HistoryTape,
+    LivePoint,
     Market,
     Match,
     MatchStatistics,
     Page,
     Player,
+    PointsPage,
     RallyMatch,
     RankingRecord,
     Score,
@@ -412,6 +414,49 @@ class LiveTennisAPI(_BaseClient):
         answers 200 with null ``players``, not 404.
         """
         return MatchStatistics.from_dict(self._request(f"/matches/{match_id}/statistics"))
+
+    def get_match_points(self, match_id: int, *, after_seq: int = 0) -> PointsPage | None:
+        """One page of a match's committed points, in ``seq`` order. **ULTRA.**
+
+        The REST read of the per-point stream: every committed point with
+        ``seq`` strictly greater than ``after_seq``, at most 500 per page.
+        Follow ``has_more`` / ``last_seq`` for the rest — or use
+        :meth:`iter_match_points`, which runs that loop for you. Works on a
+        live match (the pages grow as points commit) and on a completed one.
+
+        Read ``covers_from_start`` before treating ``seq`` 1 as the match's
+        true first point, and ``pbp_coverage`` / ``quality`` before
+        backtesting. A negative or ahead-of-the-match ``after_seq`` answers
+        400 ``bad_after_seq``; 400 ``points_disabled`` means the feature is
+        switched off server-side, which no retry will change.
+        """
+        return PointsPage.from_dict(
+            self._request(f"/matches/{match_id}/points", self._params({"after_seq": after_seq}))
+        )
+
+    def iter_match_points(self, match_id: int, *, after_seq: int = 0) -> Iterator[LivePoint]:
+        """Every committed point with ``seq > after_seq``, walking the pages.
+
+        A dedicated loop rather than :meth:`paginate`, because the cursor
+        here is the point SEQUENCE, not an offset: each page's ``last_seq``
+        becomes the next request's ``after_seq``, and the walk ends when
+        ``has_more`` goes false — never on a short page (a live match's
+        newest page is routinely short while more points are still coming).
+        """
+        cursor = int(after_seq)
+        while True:
+            page = self.get_match_points(match_id, after_seq=cursor)
+            if page is None:
+                return
+            yield from page.points
+            if not page.has_more:
+                return
+            next_cursor = page.last_seq if isinstance(page.last_seq, int) else None
+            if next_cursor is None and page.points and isinstance(page.points[-1].seq, int):
+                next_cursor = page.points[-1].seq
+            if next_cursor is None or next_cursor <= cursor:
+                return  # no forward progress — never loop on a broken page
+            cursor = next_cursor
 
     def list_rankings(
         self,
@@ -826,6 +871,28 @@ class AsyncLiveTennisAPI(_BaseClient):
 
     async def get_match_statistics(self, match_id: int) -> MatchStatistics | None:
         return MatchStatistics.from_dict(await self._request(f"/matches/{match_id}/statistics"))
+
+    async def get_match_points(self, match_id: int, *, after_seq: int = 0) -> PointsPage | None:
+        return PointsPage.from_dict(
+            await self._request(f"/matches/{match_id}/points", self._params({"after_seq": after_seq}))
+        )
+
+    async def iter_match_points(self, match_id: int, *, after_seq: int = 0) -> AsyncIterator[LivePoint]:
+        cursor = int(after_seq)
+        while True:
+            page = await self.get_match_points(match_id, after_seq=cursor)
+            if page is None:
+                return
+            for point in page.points:
+                yield point
+            if not page.has_more:
+                return
+            next_cursor = page.last_seq if isinstance(page.last_seq, int) else None
+            if next_cursor is None and page.points and isinstance(page.points[-1].seq, int):
+                next_cursor = page.points[-1].seq
+            if next_cursor is None or next_cursor <= cursor:
+                return  # no forward progress — never loop on a broken page
+            cursor = next_cursor
 
     async def list_rankings(
         self,

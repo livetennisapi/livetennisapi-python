@@ -27,6 +27,7 @@ DEFAULT_MAX_RETRIES = 2
 _TIER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("/analysis", "ULTRA"),
     ("/statistics", "ULTRA"),
+    ("/points", "ULTRA"),
     ("/rally", "ULTRA"),
     ("/charting", "ULTRA"),
     ("/ws-token", "ULTRA"),
