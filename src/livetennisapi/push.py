@@ -17,20 +17,33 @@ score objects the native feed sends, ULTRA model fields included.
 
 Channels
 --------
-``slate:all``     every live match (the default)
-``match:<id>``    one specific match — pass ``match_ids=[…]``
+``slate:all``         every live match (the default)
+``match:<id>``        one specific match — pass ``match_ids=[…]``
+``point:slate``       every committed point — pass ``points=True``
+``point:match:<id>``  one match's points — ``points=True`` with ``match_ids``
 
 The channel names come from the mint response's own vocabulary, so the server
-can evolve them without an SDK release. Today the push feed carries **score
-frames only** — the native streamer's opt-in ``break_point`` signal frames do
-not exist here (yet). Unknown frame types are still yielded, as a generic
-:class:`PushFrame`, so a future ``point`` channel family works without an
-upgrade.
+can evolve them without an SDK release — and the point channels are
+subscribed ONLY when that vocabulary advertises them. Their absence from the
+mint means this key will not receive point frames (the server's point gate is
+off, or the plan lacks point streams): ``points=True`` then raises
+:class:`~livetennisapi.PushRefused` immediately — an honest refusal, never a
+retry case. The native streamer's opt-in ``break_point`` signal frames still
+do not exist here. Frame types newer than this SDK are still yielded, as a
+generic :class:`PushFrame`.
 
 Delivery model
 --------------
-Frames are complete-state and best-effort with no replay: a missed frame
-self-corrects on the next one, so there is no client-side catch-up to do.
+Score frames are complete-state and best-effort with no replay: a missed
+score frame self-corrects on the next one, so there is no client-side
+catch-up to do for scores. Point frames are EVENTS, one per committed point,
+carrying the per-match monotonic gapless ``seq`` — so for points the stream
+does run a catch-up (``points_resume``, on by default): per-match last-seq
+cursors, a REST read of everything missed on every reconnect (yielded before
+live frames), seq-dedup of the overlap, and a synchronous gap-fill when a
+live frame arrives more than one ahead of the cursor. Catch-up covers
+matches this stream has already seen a point for; a from-start read of a
+match is :meth:`~livetennisapi.LiveTennisAPI.iter_match_points`.
 
 Reconnection
 ------------
@@ -57,7 +70,7 @@ from __future__ import annotations
 import json
 import random
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Union
 
@@ -74,7 +87,7 @@ from .errors import (
     UpgradeRequired,
 )
 from .models import Model, WSToken
-from .ws import ScoreUpdate
+from .ws import PointUpdate, ScoreUpdate
 
 try:  # `websockets` is an optional extra; _connect() raises helpfully without it
     from websockets.exceptions import ConnectionClosedOK as _ConnectionClosedOK
@@ -127,22 +140,23 @@ class PushFrame(Model):
     """A push-feed frame of a type this SDK has no dedicated model for.
 
     The push feed dispatches on each frame's ``type``: ``score`` frames become
-    :class:`~livetennisapi.ScoreUpdate` exactly as on the native feed, and
-    anything else — a future ``point`` frame, say — becomes one of these. All
-    fields stay reachable through :attr:`raw` and as attributes, per the usual
-    forward-compatible rules, so a new frame family is usable without an
-    upgrade.
+    :class:`~livetennisapi.ScoreUpdate` and ``point`` frames
+    :class:`~livetennisapi.PointUpdate`, exactly as on the native feed — and
+    anything else becomes one of these. All fields stay reachable through
+    :attr:`raw` and as attributes, per the usual forward-compatible rules, so
+    a new frame family is usable without an upgrade.
     """
 
     type: str | None = None
     match_id: int | None = None
 
 
-#: Any frame the push stream may yield. Today that is ``score`` frames as
-#: :class:`~livetennisapi.ScoreUpdate`; any other frame type arrives as a
-#: generic :class:`PushFrame`. Switch on the concrete type or the ``.type``
-#: field to tell them apart.
-PushStreamFrame = Union[ScoreUpdate, PushFrame]
+#: Any frame the push stream may yield. ``score`` frames arrive as
+#: :class:`~livetennisapi.ScoreUpdate`; ``point`` frames (``points=True``) as
+#: :class:`~livetennisapi.PointUpdate`; any other frame type as a generic
+#: :class:`PushFrame`. Switch on the concrete type or the ``.type`` field to
+#: tell them apart.
+PushStreamFrame = Union[ScoreUpdate, PointUpdate, PushFrame]
 
 
 class PushStream(_BaseClient):
@@ -154,6 +168,9 @@ class PushStream(_BaseClient):
         *,
         match_ids: Sequence[int] = (),
         channels: Sequence[str] = (),
+        points: bool = False,
+        points_resume: bool = True,
+        on_gap: Callable[[int, int, int], None] | None = None,
         auto_reconnect: bool = True,
         max_reconnect_attempts: int = 0,
         **kwargs: Any,
@@ -166,8 +183,26 @@ class PushStream(_BaseClient):
         #: every live match.
         self.match_ids = [int(m) for m in match_ids]
         #: Raw extra channel names to subscribe, verbatim — an escape hatch
-        #: for channel families newer than this SDK (e.g. ``point:slate``).
+        #: for channel families newer than this SDK.
         self.channels = [c for c in channels if c]
+        #: Also subscribe the point channels — ``point:match:{id}`` for each
+        #: of ``match_ids``, or ``point:slate`` for the whole slate — ON TOP
+        #: of the score channels. Subscribed only from the mint's advertised
+        #: vocabulary: when the mint does not advertise the family, this key
+        #: will not receive point frames (server gate off, or the plan lacks
+        #: point streams) and connecting raises
+        #: :class:`~livetennisapi.PushRefused` instead of guessing a name.
+        self.points = bool(points)
+        #: Only meaningful with ``points=True``: keep a per-match last-seq
+        #: cursor, REST-catch-up every tracked match on each (re)connect
+        #: (fetched points are yielded BEFORE live frames), drop any point
+        #: with ``seq <= cursor`` (live or fetched), and fill a mid-stream
+        #: gap synchronously before yielding the frame that revealed it.
+        self.points_resume = bool(points_resume)
+        #: Informational callback ``(match_id, expected_seq, got_seq)``,
+        #: invoked when a live point frame reveals a gap. Filling happens
+        #: regardless — the callback observes, it does not decide.
+        self.on_gap = on_gap
         self.auto_reconnect = auto_reconnect
         #: 0 means retry forever.
         self.max_reconnect_attempts = max(0, int(max_reconnect_attempts))
@@ -181,6 +216,10 @@ class PushStream(_BaseClient):
         #: stream proper (a publication racing the subscribe ack, say). The
         #: listen loop drains these before reading the socket again.
         self._backlog: list[dict[str, Any]] = []
+        #: Per-match last-seq cursors (``points_resume``). A match appears
+        #: here once its first point has been seen; the cursor is the highest
+        #: ``seq`` delivered to the caller, live or fetched.
+        self._cursors: dict[int, int] = {}
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -210,16 +249,8 @@ class PushStream(_BaseClient):
 
     # -- token mint -----------------------------------------------------------
 
-    def _mint(self) -> WSToken:
-        """Mint a fresh connection token via ``GET /ws-token``.
-
-        Called before EVERY connection attempt — tokens expire with the
-        connection and are never reused across reconnects. Auth/tier refusals
-        surface as the SDK's normal REST exceptions: an ULTRA gate raises
-        :class:`~livetennisapi.UpgradeRequired` naming the tier, an unknown
-        key :class:`~livetennisapi.Unauthorized`, a feed that is not
-        configured :class:`~livetennisapi.ServiceUnavailable`.
-        """
+    def _rest_client(self) -> Any:
+        """The internal REST client — mints tokens and runs point catch-ups."""
         if self._rest is None:
             from .client import LiveTennisAPI
 
@@ -232,7 +263,19 @@ class PushStream(_BaseClient):
                 user_agent=self.user_agent,
                 transport=self._transport,
             )
-        token = self._rest.get_ws_token()
+        return self._rest
+
+    def _mint(self) -> WSToken:
+        """Mint a fresh connection token via ``GET /ws-token``.
+
+        Called before EVERY connection attempt — tokens expire with the
+        connection and are never reused across reconnects. Auth/tier refusals
+        surface as the SDK's normal REST exceptions: an ULTRA gate raises
+        :class:`~livetennisapi.UpgradeRequired` naming the tier, an unknown
+        key :class:`~livetennisapi.Unauthorized`, a feed that is not
+        configured :class:`~livetennisapi.ServiceUnavailable`.
+        """
+        token = self._rest_client().get_ws_token()
         if token is None or not token.token or not token.ws_url:
             # A 200 that carries no usable token is a server-side fault a
             # reconnect loop cannot fix — typed so listen() raises it rather
@@ -251,7 +294,33 @@ class PushStream(_BaseClient):
         names.extend(self.channels)
         if not names:
             names.append(token.slate_channel or "slate:all")
+        if self.points:
+            names.extend(self._point_channel_names(token))
         return names
+
+    def _point_channel_names(self, token: WSToken) -> list[str]:
+        """Point channels, read STRICTLY from the mint's advertised vocabulary.
+
+        The mint's ``channels`` object is the server saying which families
+        this key can receive. When the point family is absent, subscribing a
+        guessed name would only be refused — so ``points=True`` raises the
+        typed fatal refusal here instead, naming the cause. Fatal on purpose:
+        the same key gets the same vocabulary on every reconnect, and each
+        doomed retry would mint a REST token against a refusal that cannot
+        clear.
+        """
+        if self.match_ids:
+            names = [token.point_match_channel(mid) for mid in self.match_ids]
+            if all(name is not None for name in names):
+                return [name for name in names if name is not None]
+        elif token.point_slate_channel is not None:
+            return [token.point_slate_channel]
+        raise PushRefused(
+            "points=True, but the token mint's channel vocabulary does not "
+            "advertise the point channels — the server's point feature gate "
+            "is off, or this key's plan does not include point streams. "
+            "This key will not receive point frames until that changes."
+        )
 
     # -- protocol -------------------------------------------------------------
 
@@ -412,21 +481,109 @@ class PushStream(_BaseClient):
             return
         # Dispatch on the frame's own type, never on the channel: the same
         # channel may carry new frame families later.
-        if data.get("type") == "score":
+        kind = data.get("type")
+        if kind == "score":
             update = ScoreUpdate.from_dict(data)
             if update is not None:
                 yield update
+        elif kind == "point":
+            yield from self._handle_point(data)
         else:
             frame = PushFrame.from_dict(data)
             if frame is not None:
                 yield frame
+
+    def _handle_point(self, data: Mapping[str, Any]) -> Iterator[PushStreamFrame]:
+        """One live ``point`` frame: dedup, gap-fill, cursor bookkeeping.
+
+        With ``points_resume`` off the frame passes straight through. With it
+        on, ``seq`` is the whole story: at or below the cursor it is a
+        duplicate (the catch-up already delivered it) and is dropped; exactly
+        cursor+1 advances; further ahead reveals a gap, which is filled from
+        REST synchronously BEFORE the trigger frame — which then only goes out
+        if the fill did not already cover it.
+        """
+        update = PointUpdate.from_dict(data)
+        if update is None:
+            return
+        if not self.points_resume:
+            yield update
+            return
+        match_id = update.match_id
+        seq = update.point.seq if update.point is not None else None
+        if not isinstance(match_id, int) or not isinstance(seq, int):
+            yield update  # untrackable — pass it through rather than drop it
+            return
+        cursor = self._cursors.get(match_id)
+        if cursor is None:
+            # First point seen for this match: the cursor starts HERE. No
+            # backfill to seq 1 — catch-up covers matches already seen; a
+            # from-start read is iter_match_points().
+            self._cursors[match_id] = seq
+            yield update
+            return
+        if seq > cursor + 1:
+            if self.on_gap is not None:
+                self.on_gap(match_id, cursor + 1, seq)
+            yield from self._catch_up(match_id)
+            cursor = self._cursors.get(match_id, cursor)
+        if seq <= cursor:
+            return  # already delivered — by the catch-up, or a repeat frame
+        self._cursors[match_id] = seq
+        yield update
+
+    def _catch_up(self, match_id: int) -> Iterator[PointUpdate]:
+        """REST-fetch everything past this match's cursor and yield it.
+
+        Pages via ``get_match_points(after_seq=cursor)``; every fetched point
+        advances the cursor as it is yielded, so live frames arriving after
+        the fill dedup against it. A page that makes no forward progress ends
+        the fill rather than looping.
+        """
+        cursor = self._cursors.get(match_id, 0)
+        rest = self._rest_client()
+        while True:
+            page = rest.get_match_points(match_id, after_seq=cursor)
+            if page is None:
+                return
+            advanced = False
+            for point in page.points:
+                seq = point.seq
+                if not isinstance(seq, int) or seq <= cursor:
+                    continue  # dedup holds for fetched points too
+                cursor = seq
+                self._cursors[match_id] = seq
+                advanced = True
+                update = PointUpdate.from_dict(
+                    {
+                        "type": "point",
+                        "match_id": match_id,
+                        "point": point.raw,
+                        "pbp_coverage": page.pbp_coverage,
+                        "quality": page.quality,
+                    }
+                )
+                if update is not None:
+                    yield update
+            if not page.has_more:
+                return
+            next_cursor = page.last_seq if isinstance(page.last_seq, int) else cursor
+            if next_cursor <= cursor and not advanced:
+                return  # no forward progress — never loop on a broken page
+            cursor = max(cursor, next_cursor)
+            self._cursors[match_id] = cursor
 
     def listen(self) -> Iterator[PushStreamFrame]:
         """Yield push frames until the stream is closed.
 
         ``score`` frames come as :class:`~livetennisapi.ScoreUpdate` — the
         exact same shape the native streamer yields, nested score and ULTRA
-        model fields included. Any other frame type comes as a generic
+        model fields included. With ``points=True``, ``point`` frames come as
+        :class:`~livetennisapi.PointUpdate` — and with ``points_resume`` (the
+        default), every (re)connect first REST-fetches whatever each tracked
+        match committed while the socket was down, yielding those points
+        BEFORE any live frame, so the per-match ``seq`` order the caller sees
+        never skips. Any other frame type comes as a generic
         :class:`PushFrame`. Server pings are answered internally and never
         yielded.
         """
@@ -439,6 +596,17 @@ class PushStream(_BaseClient):
             try:
                 ws = self._ws = self._connect()
                 connected_at = time.monotonic()
+
+                # Points committed while the socket was down: catch each
+                # tracked match up over REST FIRST — before the handshake
+                # backlog and the live socket — so fetched points always
+                # precede live frames and the caller's per-match seq order
+                # never runs backwards. On the first connect there are no
+                # cursors yet, so this is a no-op (catch-up covers matches
+                # already seen; a from-start read is iter_match_points()).
+                if self.points and self.points_resume:
+                    for match_id in list(self._cursors):
+                        yield from self._catch_up(match_id)
 
                 # Objects that raced the handshake acks come first, in order.
                 for obj in self._backlog:
