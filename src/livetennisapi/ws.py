@@ -25,8 +25,12 @@ feed: a ``break_point`` frame the instant a break point arises and a
 ``break_point_result`` frame when it resolves. These are yielded as
 :class:`BreakPoint` and :class:`BreakPointResult` objects alongside the usual
 :class:`ScoreUpdate`; switch on the object type (or its ``.type`` field) to tell
-them apart. With no ``signals`` the stream behaves exactly as before — score
-frames only.
+them apart. Pass ``signals=["points"]`` to also receive the per-point stream:
+one ``point`` frame per committed point, yielded as :class:`PointUpdate` —
+the point inside is the same :class:`~livetennisapi.LivePoint` (same ``seq``)
+that REST serves from ``/matches/{id}/points``, so the two reads dedup
+against each other. Points flow only when the subscription asked for them.
+With no ``signals`` the stream behaves exactly as before — score frames only.
 
 Reconnection
 ------------
@@ -60,9 +64,9 @@ from .errors import (
     Unauthorized,
     UpgradeRequired,
 )
-from .models import Model, Score
+from .models import LivePoint, Model, Score
 
-__all__ = ["BreakPoint", "BreakPointResult", "LiveScoreStream", "ScoreUpdate", "StreamFrame"]
+__all__ = ["BreakPoint", "BreakPointResult", "LiveScoreStream", "PointUpdate", "ScoreUpdate", "StreamFrame"]
 
 #: The server's subscribe timeout. Subscribing later than this drops the socket.
 _SUBSCRIBE_TIMEOUT_S = 15.0
@@ -157,10 +161,39 @@ class BreakPointResult(Model):
     ts: datetime | None = None
 
 
+@dataclass
+class PointUpdate(Model):
+    """One ``point`` frame — a committed point, the moment it lands (opt-in signal).
+
+    ``point`` is the same :class:`~livetennisapi.LivePoint` shape REST serves
+    from ``/matches/{id}/points``, identical ``seq`` included — so a stream
+    and a REST catch-up dedup against each other by ``seq`` alone.
+    ``pbp_coverage`` (``point`` | ``game``) and ``quality`` (``clean`` |
+    ``revised``) describe the match's stream. Arrives only when the
+    subscription asked for points; ULTRA-only.
+    """
+
+    match_id: int | None = None
+    point: LivePoint | None = None
+    pbp_coverage: str | None = None
+    quality: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Any) -> PointUpdate | None:
+        obj = super().from_dict(data)
+        if obj is None:
+            return None
+        # The wire NESTS the point object, exactly like score frames:
+        # ``{"type": "point", "match_id": N, "point": {seq, …}}``.
+        if isinstance(obj.point, Mapping):
+            obj.point = LivePoint.from_dict(obj.point)
+        return obj
+
+
 #: Any frame the stream may yield. ``score`` frames arrive always; the break
-#: frames only when their signal was requested. Switch on the concrete type or
-#: the ``.type`` field to tell them apart.
-StreamFrame = Union[ScoreUpdate, BreakPoint, BreakPointResult]
+#: and point frames only when their signal was requested. Switch on the
+#: concrete type or the ``.type`` field to tell them apart.
+StreamFrame = Union[ScoreUpdate, BreakPoint, BreakPointResult, PointUpdate]
 
 
 class LiveScoreStream(_BaseClient):
@@ -313,8 +346,10 @@ class LiveScoreStream(_BaseClient):
 
         Score frames come as :class:`ScoreUpdate`. When ``signals`` requested
         ``break_point``, break-point frames come as :class:`BreakPoint` and
-        :class:`BreakPointResult`. With no signals only :class:`ScoreUpdate` is
-        ever yielded, exactly as before.
+        :class:`BreakPointResult`; when it requested ``points``, per-point
+        frames come as :class:`PointUpdate` (the server sends them only to
+        subscriptions that asked). With no signals only :class:`ScoreUpdate`
+        is ever yielded, exactly as before.
         """
         attempt = 0
         while not self._closed:
@@ -342,6 +377,13 @@ class LiveScoreStream(_BaseClient):
                         bpr = BreakPointResult.from_dict(frame)
                         if bpr is not None:
                             yield bpr
+                    elif kind == "point":
+                        # Previously dropped on the floor with the protocol
+                        # noise; a subscription that asked for points must
+                        # actually see them.
+                        pu = PointUpdate.from_dict(frame)
+                        if pu is not None:
+                            yield pu
                     elif kind == "error":
                         self._raise_frame_error(frame)
                     # 'ping' and 'subscribed' are protocol noise — swallow them.

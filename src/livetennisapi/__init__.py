@@ -125,13 +125,14 @@ __all__ = [
     "ScoreUpdate",
     "BreakPoint",
     "BreakPointResult",
+    "PointUpdate",
     "StreamFrame",
     "PushStream",
     "PushFrame",
     "PushStreamFrame",
 ]
 
-_WS_EXPORTS = ("LiveScoreStream", "ScoreUpdate", "BreakPoint", "BreakPointResult", "StreamFrame")
+_WS_EXPORTS = ("LiveScoreStream", "ScoreUpdate", "BreakPoint", "BreakPointResult", "PointUpdate", "StreamFrame")
 _PUSH_EXPORTS = ("PushStream", "PushFrame", "PushStreamFrame")
 
 
