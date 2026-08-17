@@ -32,6 +32,7 @@ from .models import (
     Event,
     Fixture,
     HeadToHead,
+    HistoryCoverage,
     HistoryPackage,
     HistoryTape,
     LivePoint,
@@ -440,6 +441,21 @@ class LiveTennisAPI(_BaseClient):
         return HistoryTape.from_dict(
             self._request(f"/history/matches/{match_id}", self._params({"sequence": sequence}))
         )
+
+    def get_history_coverage(self) -> HistoryCoverage | None:
+        """The measured point-completeness table, one object. **BASIC, or any History plan.**
+
+        Per ``tour_draw`` bucket (``atp_singles``, ``itf_doubles``, …): how
+        many completed matches we hold (``completed``), how many carry any
+        tape (``any_tape``), how many have a complete point-by-point tape
+        AVAILABLE (``point_complete``), how many a default read serves
+        complete (``complete_on_default_read``), and the ``share`` — with
+        ``totals`` across every bucket. The numbers are a built artifact:
+        ``as_of`` stamps the build, ``method`` how they were measured, and a
+        503 ``coverage_unavailable`` means the artifact is not built yet —
+        not that coverage is zero.
+        """
+        return HistoryCoverage.from_dict(self._request("/history/coverage"))
 
     def get_match_statistics(self, match_id: int) -> MatchStatistics | None:
         """In-play statistics for one match. **ULTRA.**
@@ -949,6 +965,9 @@ class AsyncLiveTennisAPI(_BaseClient):
         return HistoryTape.from_dict(
             await self._request(f"/history/matches/{match_id}", self._params({"sequence": sequence}))
         )
+
+    async def get_history_coverage(self) -> HistoryCoverage | None:
+        return HistoryCoverage.from_dict(await self._request("/history/coverage"))
 
     async def get_match_statistics(self, match_id: int) -> MatchStatistics | None:
         return MatchStatistics.from_dict(await self._request(f"/matches/{match_id}/statistics"))
