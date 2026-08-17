@@ -80,6 +80,7 @@ from .errors import (
     APIConnectionError,
     LiveTennisAPIError,
     MissingDependencyError,
+    NotFound,
     PushRefused,
     RateLimited,
     ServiceUnavailable,
@@ -121,6 +122,18 @@ _DEFAULT_IDLE_TIMEOUT_S = 60.0
 #: Longest the reconnect loop honours a server ``Retry-After`` hint before
 #: falling back to its own capped backoff — same guard as the REST client's.
 _RETRY_AFTER_CAP_S = 60.0
+
+#: How long a tracked match may go without a single frame (live or fetched)
+#: before its resume cursor is evicted. Cursors otherwise accumulate forever
+#: on a long-lived slate stream, and every reconnect then spends one metered
+#: REST call per match ever seen — matches that finished days ago included.
+#: Two hours comfortably exceeds any between-points interval in a live match;
+#: a match suspended LONGER than this and resumed is simply treated as newly
+#: seen again (cursor starts at its next live frame — the same documented
+#: behaviour as any match first discovered mid-play). The only loss window is
+#: a match that was evicted, then resumed AND ended entirely inside a later
+#: disconnect — narrow enough to trade for a bounded cursor set.
+_CURSOR_IDLE_EVICT_S = 2 * 60 * 60.0
 
 #: Centrifugo error-reply codes with a precise SDK exception. Mirrors the
 #: native streamer's ``_FATAL`` map: refusals that reconnecting with the same
@@ -220,6 +233,7 @@ class PushStream(_BaseClient):
         #: here once its first point has been seen; the cursor is the highest
         #: ``seq`` delivered to the caller, live or fetched.
         self._cursors: dict[int, int] = {}
+        self._cursor_seen: dict[int, float] = {}
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -523,6 +537,7 @@ class PushStream(_BaseClient):
             yield update  # untrackable — pass it through rather than drop it
             return
         cursor = self._cursors.get(match_id)
+        self._cursor_seen[match_id] = time.monotonic()
         if cursor is None:
             # First point seen for this match: the cursor starts HERE. No
             # backfill to seq 1 — catch-up covers matches already seen; a
@@ -540,18 +555,40 @@ class PushStream(_BaseClient):
         self._cursors[match_id] = seq
         yield update
 
+    def _evict_idle_cursors(self) -> None:
+        """Drop resume cursors for matches silent past the eviction window.
+
+        Keeps the reconnect catch-up fan-out proportional to matches that are
+        actually in play (see :data:`_CURSOR_IDLE_EVICT_S`); an evicted match
+        that later resumes is treated as newly seen, exactly like any match
+        first discovered mid-play.
+        """
+        now = time.monotonic()
+        for match_id, seen in list(self._cursor_seen.items()):
+            if now - seen > _CURSOR_IDLE_EVICT_S:
+                self._cursors.pop(match_id, None)
+                self._cursor_seen.pop(match_id, None)
+
     def _catch_up(self, match_id: int) -> Iterator[PointUpdate]:
         """REST-fetch everything past this match's cursor and yield it.
 
         Pages via ``get_match_points(after_seq=cursor)``; every fetched point
         advances the cursor as it is yielded, so live frames arriving after
         the fill dedup against it. A page that makes no forward progress ends
-        the fill rather than looping.
+        the fill rather than looping. A match the server no longer knows
+        (404) has its cursor evicted instead of aborting the stream — a
+        NotFound repeated per reconnect would otherwise wedge the whole
+        stream in a reconnect loop that no retry can ever clear.
         """
         cursor = self._cursors.get(match_id, 0)
         rest = self._rest_client()
         while True:
-            page = rest.get_match_points(match_id, after_seq=cursor)
+            try:
+                page = rest.get_match_points(match_id, after_seq=cursor)
+            except NotFound:
+                self._cursors.pop(match_id, None)
+                self._cursor_seen.pop(match_id, None)
+                return
             if page is None:
                 return
             advanced = False
@@ -561,6 +598,7 @@ class PushStream(_BaseClient):
                     continue  # dedup holds for fetched points too
                 cursor = seq
                 self._cursors[match_id] = seq
+                self._cursor_seen[match_id] = time.monotonic()
                 advanced = True
                 update = PointUpdate.from_dict(
                     {
@@ -613,6 +651,7 @@ class PushStream(_BaseClient):
                 # cursors yet, so this is a no-op (catch-up covers matches
                 # already seen; a from-start read is iter_match_points()).
                 if self.points and self.points_resume:
+                    self._evict_idle_cursors()
                     for match_id in list(self._cursors):
                         yield from self._catch_up(match_id)
 
