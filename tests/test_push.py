@@ -10,6 +10,7 @@ which typed object it yields for each publication it receives.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 
@@ -22,6 +23,7 @@ import livetennisapi.push as push_module
 from livetennisapi import (
     LiveTennisAPIError,
     MissingDependencyError,
+    PointUpdate,
     PushFrame,
     PushRefused,
     PushStream,
@@ -40,6 +42,16 @@ TOKEN_BODY = {
     "expires_in": 3600,
     "ws_url": "wss://api.livetennisapi.com/connection/websocket",
     "channels": {"match": "match:{match_id}", "slate": "slate:all"},
+}
+
+#: A mint whose vocabulary ALSO advertises the point channel family.
+POINT_TOKEN_BODY = {
+    **TOKEN_BODY,
+    "channels": {
+        **TOKEN_BODY["channels"],
+        "point_match": "point:match:{match_id}",
+        "point_slate": "point:slate",
+    },
 }
 
 
@@ -426,6 +438,237 @@ class TestFrameDispatch:
         yielded, _, _ = run_push(monkeypatch, replies=replies)
         assert len(yielded) == 1
         assert yielded[0].match_id == 18953
+
+
+def point_pub(match_id: int, seq: int) -> dict:
+    """One live ``point`` publication, exactly as the point channels carry it."""
+    return pub(
+        f"point:match:{match_id}",
+        {
+            "type": "point",
+            "match_id": match_id,
+            "point": {
+                "seq": seq,
+                "set": 1,
+                "game": 1,
+                "number": seq,
+                "server": 1,
+                "winner": 1 + (seq % 2),
+                "score": {"p1": "15", "p2": "0"},
+                "sets": [0, 0],
+                "games": [[0], [0]],
+                "ts": "2026-08-17T10:00:00Z",
+            },
+            "pbp_coverage": "point",
+            "quality": "clean",
+        },
+    )
+
+
+def points_body(match_id: int, seqs: list[int], *, has_more: bool = False) -> dict:
+    """One REST ``/matches/{id}/points`` page body."""
+    return {
+        "match_id": match_id,
+        "pbp_coverage": "point",
+        "quality": "clean",
+        "points": [{"seq": s, "winner": 1 + (s % 2), "score": {"p1": "15", "p2": "0"}} for s in seqs],
+        "last_seq": seqs[-1] if seqs else None,
+        "has_more": has_more,
+    }
+
+
+def points_transport(token_body: dict, pages_by_match: dict):
+    """A transport routing ``/ws-token`` to the mint and ``/matches/{id}/points``
+    to the queued page bodies (last one sticky, like ``mint_transport``)."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        path = request.url.path
+        if path.endswith("/ws-token"):
+            return httpx.Response(200, json=token_body)
+        m = re.search(r"/matches/(\d+)/points$", path)
+        if m:
+            queue = pages_by_match.get(int(m.group(1))) or [points_body(int(m.group(1)), [])]
+            return httpx.Response(200, json=queue.pop(0) if len(queue) > 1 else queue[0])
+        return httpx.Response(404, json={"error": "not_found"})
+
+    return httpx.MockTransport(handler), seen
+
+
+def run_points_push(monkeypatch, *, messages=None, pages_by_match=None, token_body=None, **kwargs):
+    """Drive a ``points=True`` stream (slate + point:slate — two subscribes) and
+    return (yielded, fake, requests_seen)."""
+    fake = FakePushWS(handshake_replies(subscriptions=2), messages or [])
+
+    import websockets.sync.client as sync_client
+
+    monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fake)
+
+    transport, seen = points_transport(token_body if token_body is not None else POINT_TOKEN_BODY, pages_by_match or {})
+    stream = PushStream(
+        api_key="twjp_test",
+        transport=transport,
+        auto_reconnect=False,
+        max_retries=0,
+        points=True,
+        **kwargs,
+    )
+    yielded = list(stream)
+    return yielded, fake, seen
+
+
+class TestPointChannels:
+    """The point channels are subscribed ONLY from the mint's own vocabulary;
+    their absence is an honest refusal, never a guessed name."""
+
+    def test_points_true_subscribes_the_advertised_slate_channel(self, monkeypatch):
+        _, fake, _ = run_points_push(monkeypatch)
+        subscribes = [json.loads(s)["subscribe"]["channel"] for s in fake.sent[1:]]
+        assert subscribes == ["slate:all", "point:slate"]
+
+    def test_points_true_with_match_ids_subscribes_per_match_point_channels(self, monkeypatch):
+        fake = FakePushWS(handshake_replies(subscriptions=2), [])
+
+        import websockets.sync.client as sync_client
+
+        monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fake)
+        transport, _ = points_transport(POINT_TOKEN_BODY, {})
+        stream = PushStream(
+            "twjp_test",
+            transport=transport,
+            auto_reconnect=False,
+            max_retries=0,
+            points=True,
+            match_ids=[18953],
+        )
+        list(stream)
+        subscribes = [json.loads(s)["subscribe"]["channel"] for s in fake.sent[1:]]
+        assert subscribes == ["match:18953", "point:match:18953"]
+
+    def test_absent_vocabulary_raises_the_typed_refusal_naming_the_cause(self, monkeypatch):
+        with pytest.raises(PushRefused) as exc:
+            run_points_push(monkeypatch, token_body=TOKEN_BODY)
+        message = str(exc.value)
+        assert "point" in message
+        assert "gate" in message
+        assert "plan" in message
+
+    def test_the_refusal_is_never_reconnect_looped(self, monkeypatch):
+        # Same key, same vocabulary on every reconnect: retrying would only
+        # mint a REST token per doomed attempt.
+        fakes, _, seen, stream = run_reconnecting_push(
+            monkeypatch,
+            fake_factory=lambda: FakePushWS(handshake_replies(subscriptions=2), []),
+            max_reconnect_attempts=5,
+            mint=[httpx.Response(200, json=TOKEN_BODY)],
+            points=True,
+        )
+        with pytest.raises(PushRefused):
+            list(stream)
+        assert len(seen) == 1  # one mint — the refusal was immediate
+
+
+class TestPointFrames:
+    def test_point_publication_yields_point_update(self, monkeypatch):
+        yielded, _, _ = run_points_push(monkeypatch, messages=[json.dumps(point_pub(7, 41))])
+        assert len(yielded) == 1
+        update = yielded[0]
+        assert isinstance(update, PointUpdate)
+        assert update.match_id == 7
+        assert update.pbp_coverage == "point"
+        assert update.quality == "clean"
+        assert update.point.seq == 41
+
+    def test_duplicate_seq_is_dropped(self, monkeypatch):
+        messages = [json.dumps(point_pub(7, s)) for s in (5, 5, 6)]
+        yielded, _, seen = run_points_push(monkeypatch, messages=messages)
+        assert [f.point.seq for f in yielded] == [5, 6]
+        assert not [r for r in seen if r.url.path.endswith("/points")]  # no gap → no REST
+
+    def test_points_resume_off_passes_everything_through(self, monkeypatch):
+        messages = [json.dumps(point_pub(7, s)) for s in (5, 5, 9)]
+        yielded, _, seen = run_points_push(monkeypatch, messages=messages, points_resume=False)
+        assert [f.point.seq for f in yielded] == [5, 5, 9]  # dups and gaps: caller's problem
+        assert not [r for r in seen if r.url.path.endswith("/points")]
+
+    def test_gap_is_filled_from_rest_before_the_trigger_frame(self, monkeypatch):
+        gaps: list[tuple[int, int, int]] = []
+        yielded, _, seen = run_points_push(
+            monkeypatch,
+            messages=[json.dumps(point_pub(7, 3)), json.dumps(point_pub(7, 7))],
+            pages_by_match={7: [points_body(7, [4, 5, 6, 7])]},
+            on_gap=lambda m, expected, got: gaps.append((m, expected, got)),
+        )
+        assert [f.point.seq for f in yielded] == [3, 4, 5, 6, 7]
+        assert all(isinstance(f, PointUpdate) for f in yielded)
+        assert yielded[1].pbp_coverage == "point"  # fetched frames carry the page's meta
+        assert gaps == [(7, 4, 7)]  # informational only — the fill ran regardless
+        point_reqs = [r for r in seen if r.url.path.endswith("/points")]
+        assert len(point_reqs) == 1
+        assert point_reqs[0].url.params["after_seq"] == "3"
+
+    def test_gap_fill_follows_has_more_across_pages(self, monkeypatch):
+        yielded, _, seen = run_points_push(
+            monkeypatch,
+            messages=[json.dumps(point_pub(7, 3)), json.dumps(point_pub(7, 7))],
+            pages_by_match={
+                7: [points_body(7, [4, 5], has_more=True), points_body(7, [6])],
+            },
+        )
+        # REST held 4-6; the trigger frame itself (7) still goes out after the fill.
+        assert [f.point.seq for f in yielded] == [3, 4, 5, 6, 7]
+        point_reqs = [r for r in seen if r.url.path.endswith("/points")]
+        assert [r.url.params["after_seq"] for r in point_reqs] == ["3", "5"]
+
+    def test_untrackable_point_passes_through(self, monkeypatch):
+        # No seq to cursor on — passing it through beats dropping it.
+        frame = pub("point:slate", {"type": "point", "match_id": 7, "point": {"seq": None}})
+        yielded, _, _ = run_points_push(monkeypatch, messages=[json.dumps(frame)])
+        assert len(yielded) == 1
+        assert isinstance(yielded[0], PointUpdate)
+
+
+class TestPointResume:
+    def test_reconnect_catches_up_each_tracked_match_before_live_frames(self, monkeypatch):
+        # Connection 1 sees seq 2, then drops; 3 and 4 commit while the socket
+        # is down; connection 2 receives seq 5 live. The caller must see
+        # 2, 3, 4, 5 — the REST fill BEFORE the live frame, nothing skipped.
+        fakes = [
+            FakePushWS(handshake_replies(subscriptions=2), [json.dumps(point_pub(7, 2))]),
+            FakePushWS(handshake_replies(subscriptions=2), [json.dumps(point_pub(7, 5))]),
+        ]
+
+        import websockets.sync.client as sync_client
+
+        monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fakes.pop(0))
+        monkeypatch.setattr(push_module.time, "sleep", lambda s: None)
+
+        transport, seen = points_transport(POINT_TOKEN_BODY, {7: [points_body(7, [3, 4])]})
+        stream = PushStream(
+            "twjp_test",
+            transport=transport,
+            auto_reconnect=True,
+            max_reconnect_attempts=1,
+            max_retries=0,
+            points=True,
+            match_ids=[7],
+        )
+        frames: list = []
+        with pytest.raises(APIConnectionError):
+            for frame in stream:
+                frames.append(frame)
+        assert [f.point.seq for f in frames] == [2, 3, 4, 5]
+        point_reqs = [r for r in seen if r.url.path.endswith("/points")]
+        assert point_reqs[0].url.params["after_seq"] == "2"  # from the tracked cursor
+        mints = [r for r in seen if r.url.path.endswith("/ws-token")]
+        assert len(mints) == 2  # still one fresh token per connection
+
+    def test_first_connect_runs_no_catch_up(self, monkeypatch):
+        # No cursors yet: catch-up covers matches already seen. A from-start
+        # read is iter_match_points(), not the stream.
+        _, _, seen = run_points_push(monkeypatch, match_ids=[7])
+        assert not [r for r in seen if r.url.path.endswith("/points")]
 
 
 class TestLiveness:

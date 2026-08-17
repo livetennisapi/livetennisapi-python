@@ -18,11 +18,13 @@ from livetennisapi.models import (
     HeadToHead,
     HistoryPackage,
     HistoryTape,
+    LivePoint,
     Market,
     Match,
     MatchStatistics,
     Page,
     Player,
+    PointsPage,
     RallyMatch,
     RallyPoint,
     RankingRecord,
@@ -369,6 +371,46 @@ class TestRankingRecord:
         assert rec.player_name == "A. Nobody"
 
 
+class TestLivePoints:
+    def test_live_point_parses_every_field(self):
+        p = LivePoint.from_dict(
+            {"seq": 41, "set": 2, "game": 5, "number": 3, "tiebreak": False,
+             "server": 1, "winner": 2, "score": {"p1": "30", "p2": "40"},
+             "sets": [1, 0], "games": [[6, 2], [4, 3]], "ts": "2026-08-17T10:15:03Z"}
+        )
+        assert p.seq == 41
+        assert p.set == 2
+        assert p.winner == 2
+        assert p.score == {"p1": "30", "p2": "40"}
+        assert p.games == [[6, 2], [4, 3]]
+        assert isinstance(p.ts, datetime)
+
+    def test_unstated_server_and_winner_stay_none(self):
+        p = LivePoint.from_dict({"seq": 1, "server": None, "winner": None})
+        assert p.server is None
+        assert p.winner is None
+
+    def test_points_page_parses_and_iterates(self):
+        page = PointsPage.from_dict(
+            {"match_id": 18953, "pbp_coverage": "point", "quality": "clean",
+             "covers_from_start": True,
+             "points": [{"seq": 1, "winner": 1}, {"seq": 2, "winner": 2}],
+             "last_seq": 2, "has_more": True}
+        )
+        assert page.match_id == 18953
+        assert page.covers_from_start is True
+        assert page.last_seq == 2
+        assert page.has_more is True
+        assert len(page) == 2
+        assert [p.seq for p in page] == [1, 2]
+        assert all(isinstance(p, LivePoint) for p in page)
+
+    def test_absent_covers_from_start_is_none(self):
+        # Older servers omit the field entirely: not measured, never "no".
+        page = PointsPage.from_dict({"match_id": 1, "points": [], "last_seq": None, "has_more": False})
+        assert page.covers_from_start is None
+
+
 class TestRally:
     def test_rally_match_with_points(self):
         m = RallyMatch.from_dict(
@@ -455,6 +497,24 @@ class TestWSToken:
         tok = WSToken.from_dict({"token": "t"})
         assert tok.slate_channel is None
         assert tok.match_channel(1) is None
+
+    def test_point_channels_read_from_the_vocabulary(self):
+        tok = WSToken.from_dict(
+            {"token": "t",
+             "channels": {"match": "match:{id}", "slate": "slate:all",
+                          "point_match": "point:match:{id}", "point_slate": "point:slate"}}
+        )
+        assert tok.point_slate_channel == "point:slate"
+        assert tok.point_match_channel(18953) == "point:match:18953"
+
+    def test_absent_point_vocabulary_is_an_honest_none(self):
+        # A mint without the point family means this key will not receive
+        # point frames — the helpers must refuse to guess a name.
+        tok = WSToken.from_dict(
+            {"token": "t", "channels": {"match": "match:{id}", "slate": "slate:all"}}
+        )
+        assert tok.point_slate_channel is None
+        assert tok.point_match_channel(18953) is None
 
 
 class TestUsage:
