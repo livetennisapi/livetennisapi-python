@@ -385,14 +385,16 @@ class TestFrameDispatch:
         assert update.score.danger == 0.12
 
     def test_unknown_frame_type_yields_generic_push_frame(self, monkeypatch):
-        point = pub("point:match:7", {"type": "point", "match_id": 7, "winner": 2})
-        yielded, _, _ = run_push(monkeypatch, messages=[json.dumps(point)])
+        # ``point`` frames grew a dedicated model in 1.5.0, so the
+        # forward-compatibility check now uses a type no SDK version knows.
+        novel = pub("slate:all", {"type": "momentum", "match_id": 7, "swing": 0.4})
+        yielded, _, _ = run_push(monkeypatch, messages=[json.dumps(novel)])
         assert len(yielded) == 1
         frame = yielded[0]
         assert isinstance(frame, PushFrame)
-        assert frame.type == "point"
+        assert frame.type == "momentum"
         assert frame.match_id == 7
-        assert frame.winner == 2  # unknown fields stay reachable
+        assert frame.swing == 0.4  # unknown fields stay reachable
 
     def test_newline_batched_message_yields_every_object(self, monkeypatch):
         second = pub("slate:all", {"type": "score", "match_id": 7, "score": {"sets": [0, 1]}})

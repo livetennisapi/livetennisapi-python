@@ -61,10 +61,14 @@ class PushRefused(LiveTennisAPIError):
 
     The server answered the handshake with a non-temporary error reply — an
     unknown channel name, a duplicate subscription, a malformed command.
-    Repeating the identical handshake cannot succeed, so the stream raises
-    instead of reconnecting (each reconnect would mint a fresh token, a real
-    REST call, against a refusal that can never clear). ``code`` is the
-    server's numeric error code when it sent one.
+    Also raised before any connect when ``points=True`` but the token mint's
+    channel vocabulary does not advertise the point family: the server's
+    point gate is off, or the plan lacks point streams, and subscribing a
+    guessed name would only be refused. Repeating the identical handshake
+    cannot succeed, so the stream raises instead of reconnecting (each
+    reconnect would mint a fresh token, a real REST call, against a refusal
+    that can never clear). ``code`` is the server's numeric error code when
+    it sent one.
     """
 
     def __init__(self, message: str, *, code: int | None = None) -> None:
