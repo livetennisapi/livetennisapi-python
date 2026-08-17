@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-08-18
+
+### Added
+- **`draw` — singles vs doubles, three-valued and filterable.** `Match` gains
+  `draw`: `"singles"` | `"doubles"` | `None` — and the `None` is an answer,
+  not a gap. Team ties and team exhibitions never state which discipline a
+  rubber was, so those matches carry a null draw rather than a guess; the
+  existing `is_doubles` stays untouched but is lossy (it cannot say
+  "unknown"), so branch on `draw`. The same word filters:
+  `list_matches`, `list_completed_matches`, `list_tournaments` and
+  `list_fixtures` take `draw="singles" | "doubles"`, passed through to the
+  server as given (the server owns validation — an invalid value is a 400
+  `bad_draw` with the allowed list in the body). A null-draw row matches
+  NEITHER filter value, so `draw="singles"` plus `draw="doubles"` is not
+  everything.
+- **`get_history_coverage()` — the measured point-completeness table.**
+  BASIC, or any History plan. One object for the whole completed archive,
+  typed as `HistoryCoverage`: per-`tour_draw` bucket (`atp_singles`,
+  `itf_doubles`, …) how many completed matches we hold (`completed`), how
+  many carry any tape (`any_tape`), how many have a complete point-by-point
+  tape AVAILABLE (`point_complete`), how many a default read serves complete
+  (`complete_on_default_read`), and the `share` — plus `totals` across every
+  bucket. The two completeness counts differ on purpose: a complete tape can
+  exist for a match a default read does not serve complete. The numbers are
+  a built artifact (`as_of` — parsed — stamps the build, `method` how they
+  were measured); while it is not built the endpoint answers 503
+  `coverage_unavailable`, raised as `ServiceUnavailable` with the code
+  readable — never an empty object.
+- **`list_fixtures` gains `tour=` and `draw=`.** The server accepted a
+  `tour` filter on `/fixtures` all along; this client never passed it. That
+  gap closes here, alongside the new `draw`.
+- The per-row `tape` block on `/history/matches` rows also carries
+  `starts_at_love` and `computed_at` on servers that measure them —
+  reachable today through the models' forward-compatible field
+  pass-through. An absent field there means an older server or "not
+  measured", never "no".
+
+### Notes
+- **Fully backwards compatible.** Every addition is a new method, a new
+  optional keyword argument, a new optional field, or a new model.
+
 ## [1.5.0] — 2026-08-17
 
 ### Added
