@@ -47,6 +47,8 @@ __all__ = [
     "HistoryTape",
     "MatchStatistics",
     "RankingRecord",
+    "LivePoint",
+    "PointsPage",
     "RallyPoint",
     "RallyMatch",
     "ChartingPlayer",
@@ -688,6 +690,74 @@ class RankingRecord(Model):
 
 
 @dataclass
+class LivePoint(Model):
+    """One committed point of a match's point-by-point stream. **ULTRA.**
+
+    ``seq`` is the per-match point sequence — monotonic and gapless, starting
+    at 1 — and is THE dedup/resume key: the same point carries the same
+    ``seq`` whether it arrived over REST (:meth:`~livetennisapi.LiveTennisAPI.get_match_points`)
+    or as a push/WebSocket ``point`` frame, so the two reads deduplicate
+    against each other by ``seq`` alone.
+
+    ``score`` is the point score AFTER this point, as display strings
+    (``{"p1": "40", "p2": "30"}``); ``sets`` is ``[sets_p1, sets_p2]`` and
+    ``games`` follows the usual player-major layout (each side a per-set
+    list). ``server`` / ``winner`` are 1|2, null when the feed did not state
+    them. ``ts`` is the capture time, not an on-court clock.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("ts",)
+
+    seq: int | None = None
+    set: int | None = None
+    game: int | None = None
+    number: int | None = None
+    tiebreak: bool | None = None
+    server: int | None = None
+    winner: int | None = None
+    score: dict[str, Any] | None = None
+    sets: list[int] | None = None
+    games: list[list[int]] | None = None
+    ts: datetime | None = None
+
+
+@dataclass
+class PointsPage(Model):
+    """One page of a match's point-by-point stream. **ULTRA.**
+
+    ``points`` is ordered by ``seq``; ``last_seq`` is the highest sequence on
+    this page — the cursor for the next read (``after_seq=last_seq``) — and
+    ``has_more`` says whether committed points exist beyond it (read that,
+    never the page length). ``pbp_coverage`` (``point`` | ``game``) and
+    ``quality`` (``clean`` | ``revised``) describe the whole match's stream,
+    not this page. ``covers_from_start`` says whether ``seq`` 1 really is the
+    match's first point; ``None`` means the server did not state it (older
+    servers omit the field entirely) — not measured, never "no".
+    """
+
+    match_id: int | None = None
+    pbp_coverage: str | None = None
+    quality: str | None = None
+    covers_from_start: bool | None = None
+    points: list[LivePoint] = field(default_factory=list)
+    last_seq: int | None = None
+    has_more: bool | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> PointsPage | None:
+        obj = super().from_dict(data)
+        if obj is not None and isinstance(obj.points, list):
+            obj.points = [p for p in (LivePoint.from_dict(x) for x in obj.points) if p is not None]
+        return obj
+
+    def __iter__(self):
+        return iter(self.points)
+
+    def __len__(self) -> int:
+        return len(self.points)
+
+
+@dataclass
 class RallyPoint(Model):
     """One charted point — how the point was played, not just what it scored.
 
@@ -840,8 +910,16 @@ class WSToken(Model):
 
     ``ws_url`` is the push endpoint and ``channels`` the channel vocabulary:
     ``match:{id}`` per-match streams and ``slate:all`` for every live score
-    frame. Frames are the same allowlist score objects the polling endpoints
-    return. The token is short-lived — mint a fresh one on reconnect.
+    frame, plus — where the mint advertises them — the point channels
+    (``point:match:{id}`` / ``point:slate``). Frames are the same allowlist
+    score objects the polling endpoints return. The token is short-lived —
+    mint a fresh one on reconnect.
+
+    Subscribe ONLY names read from this vocabulary. A channel family absent
+    from ``channels`` means this key will not receive those frames — the
+    server's feature gate is off, or the plan lacks them. That is an honest
+    refusal, not a retry case: the helpers return ``None`` for it rather
+    than guessing a name the server would refuse.
     """
 
     token: str | None = None
@@ -858,6 +936,28 @@ class WSToken(Model):
     def match_channel(self, match_id: int) -> str | None:
         """The channel name for one match, from the server's own template."""
         template = (self.channels or {}).get("match")
+        if not isinstance(template, str):
+            return None
+        return re.sub(r"\{[^}]*\}", str(match_id), template)
+
+    @property
+    def point_slate_channel(self) -> str | None:
+        """The all-matches point channel (``point:slate``), from the vocabulary.
+
+        ``None`` when the mint did not advertise it — this key will not
+        receive point frames (server gate off, or the plan lacks point
+        streams), so there is no name worth subscribing.
+        """
+        value = (self.channels or {}).get("point_slate")
+        return value if isinstance(value, str) else None
+
+    def point_match_channel(self, match_id: int) -> str | None:
+        """The point channel for one match, from the server's own template.
+
+        ``None`` when the mint did not advertise the family — same honest
+        refusal as :attr:`point_slate_channel`.
+        """
+        template = (self.channels or {}).get("point_match")
         if not isinstance(template, str):
             return None
         return re.sub(r"\{[^}]*\}", str(match_id), template)
