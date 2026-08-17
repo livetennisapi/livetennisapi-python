@@ -147,6 +147,7 @@ class LiveTennisAPI(_BaseClient):
         status: str = "live",
         *,
         tour: str | None = None,
+        draw: str | None = None,
         player: int | list[int] | None = None,
         country: str | None = None,
         from_: str | None = None,
@@ -166,6 +167,11 @@ class LiveTennisAPI(_BaseClient):
           lowercase 3-letter code. The vocabulary is what the Player object
           returns — IOC-style codes (``ned``, ``sui``, ``gre``), NOT ISO-3166.
           Players with no recorded country never match.
+        - ``draw`` — ``singles`` | ``doubles``, matching :attr:`Match.draw`.
+          That field is three-valued, and a null-draw match (team ties, team
+          exhibitions — the draw is unknown) matches NEITHER value: filtering
+          by ``singles`` and then by ``doubles`` is not everything. Anything
+          else is a 400 ``bad_draw`` with the allowed list in the body.
         """
         return _page(
             self._request(
@@ -174,6 +180,7 @@ class LiveTennisAPI(_BaseClient):
                     {
                         "status": status,
                         "tour": tour,
+                        "draw": draw,
                         "player": player,
                         "country": country,
                         "from": from_,
@@ -230,6 +237,7 @@ class LiveTennisAPI(_BaseClient):
         self,
         *,
         tour: str | None = None,
+        draw: str | None = None,
         player: int | list[int] | None = None,
         country: str | None = None,
         from_: str | None = None,
@@ -240,14 +248,21 @@ class LiveTennisAPI(_BaseClient):
     ) -> Page:
         """Completed matches, newest first, with a derived ``winner``. **BASIC.**
 
-        Takes the same ``tour`` / ``player`` / ``country`` / ``from_`` / ``to``
-        filters as :meth:`list_matches`, plus ``coverage`` — keep only matches
+        Takes the same ``tour`` / ``draw`` / ``player`` / ``country`` /
+        ``from_`` / ``to`` filters as :meth:`list_matches` (a null-draw row
+        matches neither ``draw`` value), plus ``coverage`` — keep only matches
         whose tape has that coverage (``from_start`` | ``partial`` |
         ``reconstructed`` | ``reconstructed_partial`` | ``none``). Note the
         coverage filter is applied AFTER the page is cut, so a filtered page is
         routinely shorter than ``limit`` (and may be empty) while later pages
         still hold matching matches — a short filtered page is not an
         end-of-data signal there.
+
+        Each row carries a ``tape`` block (coverage and row count, plus —
+        where the server measures them — ``points_complete``,
+        ``completeness``, ``starts_at_love`` and ``computed_at``), reachable
+        through the models' forward-compatible field pass-through. An absent
+        field there means an older server or "not measured" — never "no".
         """
         return _page(
             self._request(
@@ -255,6 +270,7 @@ class LiveTennisAPI(_BaseClient):
                 self._params(
                     {
                         "tour": tour,
+                        "draw": draw,
                         "player": player,
                         "country": country,
                         "from": from_,
@@ -268,21 +284,42 @@ class LiveTennisAPI(_BaseClient):
             Match,
         )
 
-    def list_fixtures(self, *, limit: int = 50, offset: int = 0) -> Page:
-        """Upcoming scheduled fixtures, earliest first."""
-        return _page(self._request("/fixtures", self._params({"limit": limit, "offset": offset})), Fixture)
+    def list_fixtures(
+        self, *, tour: str | None = None, draw: str | None = None, limit: int = 50, offset: int = 0
+    ) -> Page:
+        """Upcoming scheduled fixtures, earliest first.
+
+        ``tour`` and ``draw`` filter as on :meth:`list_matches` — the server
+        accepted ``tour`` here all along; this client just never passed it.
+        A fixture whose draw is unknown matches neither ``draw`` value.
+        """
+        return _page(
+            self._request(
+                "/fixtures",
+                self._params({"tour": tour, "draw": draw, "limit": limit, "offset": offset}),
+            ),
+            Fixture,
+        )
 
     def list_tournaments(
-        self, search: str | None = None, *, tour: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        search: str | None = None,
+        *,
+        tour: str | None = None,
+        draw: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> Page:
         """Tournament catalogue, name order — the id space ``Match.tournament_id`` joins.
 
-        ``search`` is a case-insensitive substring match on the tournament name.
+        ``search`` is a case-insensitive substring match on the tournament
+        name; ``draw`` filters as on :meth:`list_matches` (a tournament whose
+        draw is unknown matches neither value).
         """
         return _page(
             self._request(
                 "/tournaments",
-                self._params({"search": search, "tour": tour, "limit": limit, "offset": offset}),
+                self._params({"search": search, "tour": tour, "draw": draw, "limit": limit, "offset": offset}),
             ),
             Tournament,
         )
@@ -733,6 +770,7 @@ class AsyncLiveTennisAPI(_BaseClient):
         status: str = "live",
         *,
         tour: str | None = None,
+        draw: str | None = None,
         player: int | list[int] | None = None,
         country: str | None = None,
         from_: str | None = None,
@@ -747,6 +785,7 @@ class AsyncLiveTennisAPI(_BaseClient):
                     {
                         "status": status,
                         "tour": tour,
+                        "draw": draw,
                         "player": player,
                         "country": country,
                         "from": from_,
@@ -795,6 +834,7 @@ class AsyncLiveTennisAPI(_BaseClient):
         self,
         *,
         tour: str | None = None,
+        draw: str | None = None,
         player: int | list[int] | None = None,
         country: str | None = None,
         from_: str | None = None,
@@ -809,6 +849,7 @@ class AsyncLiveTennisAPI(_BaseClient):
                 self._params(
                     {
                         "tour": tour,
+                        "draw": draw,
                         "player": player,
                         "country": country,
                         "from": from_,
@@ -822,16 +863,30 @@ class AsyncLiveTennisAPI(_BaseClient):
             Match,
         )
 
-    async def list_fixtures(self, *, limit: int = 50, offset: int = 0) -> Page:
-        return _page(await self._request("/fixtures", self._params({"limit": limit, "offset": offset})), Fixture)
+    async def list_fixtures(
+        self, *, tour: str | None = None, draw: str | None = None, limit: int = 50, offset: int = 0
+    ) -> Page:
+        return _page(
+            await self._request(
+                "/fixtures",
+                self._params({"tour": tour, "draw": draw, "limit": limit, "offset": offset}),
+            ),
+            Fixture,
+        )
 
     async def list_tournaments(
-        self, search: str | None = None, *, tour: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        search: str | None = None,
+        *,
+        tour: str | None = None,
+        draw: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> Page:
         return _page(
             await self._request(
                 "/tournaments",
-                self._params({"search": search, "tour": tour, "limit": limit, "offset": offset}),
+                self._params({"search": search, "tour": tour, "draw": draw, "limit": limit, "offset": offset}),
             ),
             Tournament,
         )
