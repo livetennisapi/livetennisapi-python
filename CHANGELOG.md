@@ -3,6 +3,71 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-08-17
+
+### Added
+- **The per-point stream, on every surface the SDK has.** One record per
+  committed point — who served, who won it, the score after — keyed by the
+  per-match `seq`: monotonic, gapless, starting at 1, and identical across
+  REST and both streamers, so any two reads deduplicate against each other
+  by `seq` alone. All of it is ULTRA.
+  - **REST**: `get_match_points(match_id, after_seq=0)` returns a
+    `PointsPage` (every committed point with `seq > after_seq`, ≤500 per
+    page), and `iter_match_points` walks the pages on the sequence cursor —
+    `has_more`/`last_seq`, never the page length (a live match's newest
+    page is routinely short while more points are coming), stopping rather
+    than looping on a page that makes no forward progress. Both on the
+    async client too. `PointsPage.covers_from_start` says whether `seq` 1
+    really is the match's first point — `None` when the server did not
+    state it (older servers omit the field), which means "not measured",
+    never "no". A 400 `points_disabled` means the feature is off
+    server-side; no retry changes that.
+  - **Native streamer** (`LiveScoreStream`): `signals=["points"]` yields a
+    `PointUpdate` per point (`match_id`, the nested `LivePoint`,
+    `pbp_coverage`, `quality`), interleaved with score frames. `point`
+    frames were previously dropped with the protocol noise; they now
+    dispatch — a subscription that asked for points actually sees them.
+  - **Push streamer** (`PushStream`): `points=True` subscribes the point
+    channels — `point:slate`, or `point:match:<id>` per entry of
+    `match_ids` — read STRICTLY from the token mint's advertised channel
+    vocabulary. Because point frames are events (not self-correcting
+    state), the push side adds a resume: `points_resume=True` (the
+    default) keeps per-match last-`seq` cursors, REST-catches-up every
+    tracked match on each (re)connect — fetched points are yielded
+    **before** live frames, so the caller's per-match order never skips —
+    drops any point at or below the cursor (live or fetched), and fills a
+    mid-stream gap synchronously before yielding the frame that revealed
+    it. The optional `on_gap(match_id, expected_seq, got_seq)` callback is
+    informational; filling happens regardless. Catch-up covers matches the
+    stream has already seen a point for — a from-start read of a match is
+    `iter_match_points`.
+- `LivePoint` and `PointsPage` models; `PointUpdate` joins the native
+  streamer's `StreamFrame` union and the push streamer's `PushStreamFrame`
+  union. `WSToken` grows `point_match_channel(id)` / `point_slate_channel`
+  beside the existing helpers — reading the mint's vocabulary and returning
+  `None` when the point family is not advertised, never guessing a name.
+- `list_rankings` gains the Elo companion parameters on both clients:
+  `tour`, `surface`, `archive_player`, `min_matches`, `activity_weeks`,
+  passed to the server as given. `system="elo"` is a valid system — and
+  Elo is never included implicitly: no mode returns Elo records unless
+  `system` names it. The Elo leaderboard (the listing mode) requires
+  `tour`.
+
+### Notes
+- **The push point channels are server-gated.** They are subscribed only
+  when the mint's channel vocabulary advertises them; when it does not —
+  the server's point feature gate is off, or the plan lacks point streams —
+  `points=True` raises `PushRefused` immediately, naming that cause. That
+  is an honest refusal, not a retry case: the same key gets the same
+  vocabulary on every reconnect, and each doomed retry would mint a REST
+  token against a refusal that cannot clear.
+- Read `pbp_coverage` (`point` | `game`) and `quality` (`clean` |
+  `revised`) before treating any point stream as one-row-per-point truth —
+  they describe the whole match's stream, on every surface that serves it.
+- **Fully backwards compatible.** Without `signals=["points"]` /
+  `points=True` both streamers behave exactly as 1.4.0; the new
+  `list_rankings` parameters default to absent and send nothing.
+
 ## [1.4.0] — 2026-08-16
 
 ### Added

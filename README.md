@@ -109,6 +109,29 @@ With no `signals` the stream behaves exactly as before — score frames only.
 Both the feed and the model fields are ULTRA-only. A runnable example lives in
 [`livetennisapi-starter-python`](https://github.com/livetennisapi/livetennisapi-starter-python).
 
+### The per-point stream
+
+Opt in with `signals=["points"]` to receive one `PointUpdate` per committed
+point — who served, who won it, the score after, and the per-match `seq`
+(monotonic, gapless, starting at 1). That `seq` is the same key REST serves
+from `get_match_points`, so a stream and a REST read deduplicate against each
+other by `seq` alone:
+
+```python
+from livetennisapi import LiveScoreStream, PointUpdate
+
+with LiveScoreStream(signals=["points"]) as stream:
+    for frame in stream:
+        if isinstance(frame, PointUpdate):
+            p = frame.point
+            print(f"match {frame.match_id} point {p.seq}: p{p.winner} won")
+```
+
+Check `frame.pbp_coverage` (`point` | `game`) and `frame.quality` (`clean` |
+`revised`) before treating the stream as one-row-per-point truth. On
+`PushStream` the same frames arrive with `points=True` — see below, including
+the resume machinery the push side adds.
+
 ### Model fields ride the WebSocket too
 
 Score frames carry the same ULTRA model fields as REST — `update.score.win_probability_p1`
@@ -136,33 +159,60 @@ with PushStream(match_ids=[18953]) as stream:   # one specific match
 
 `ScoreUpdate` frames are identical to the native feed's — nested score, ULTRA
 model fields and all — so switching streamers changes nothing downstream.
-Frames are complete-state and best-effort with no replay: a missed frame
-self-corrects on the next one, so there is no catch-up to run. Auth and tier
-refusals surface from the token mint as the SDK's normal exceptions
-(`UpgradeRequired` naming ULTRA, and so on) and are never retried — and
-neither are deterministic connect/subscribe refusals: an unknown or
-unpermitted channel raises `PushRefused` or `Unauthorized` instead of
-reconnect-looping (every doomed reconnect would mint a token against your
+Score frames are complete-state and best-effort with no replay: a missed
+score frame self-corrects on the next one, so there is no catch-up to run for
+scores. Auth and tier refusals surface from the token mint as the SDK's
+normal exceptions (`UpgradeRequired` naming ULTRA, and so on) and are never
+retried — and neither are deterministic connect/subscribe refusals: an
+unknown or unpermitted channel raises `PushRefused` or `Unauthorized` instead
+of reconnect-looping (every doomed reconnect would mint a token against your
 quota). Reads are bounded by the server's advertised heartbeat cadence, so a
 silently dead connection is detected and reconnected rather than hanging the
 stream forever.
 
-Honestly stated: the push feed carries **score frames only** today — the
-native streamer's opt-in `break_point` signal frames don't exist there yet.
-If you need break-point / divergence signals, use `LiveScoreStream`. Frame
-types newer than this SDK are still yielded, as a generic `PushFrame`.
+**Point frames** ride the push feed too — `points=True` subscribes the point
+channels (`point:slate`, or `point:match:<id>` per entry of `match_ids`) and
+yields the same `PointUpdate` objects as the native feed's `points` signal.
+Because point frames are events keyed by the gapless per-match `seq` (not
+self-correcting state), the push side runs a resume for them —
+`points_resume=True`, the default: per-match last-`seq` cursors, a REST
+catch-up of everything missed on every reconnect (fetched points are yielded
+**before** live frames), `seq`-dedup of the overlap, and a synchronous
+gap-fill whenever a live frame lands more than one ahead of the cursor (the
+optional `on_gap(match_id, expected_seq, got_seq)` callback observes gaps;
+filling happens regardless). Catch-up covers matches the stream has already
+seen a point for — a from-start read of a match is `iter_match_points`.
+
+```python
+with PushStream(match_ids=[18953], points=True) as stream:
+    for frame in stream:
+        ...
+```
+
+Honestly stated: the point channels are **server-gated**. They are subscribed
+only when the token mint's own channel vocabulary advertises them; when it
+does not — the server's point gate is off, or your plan lacks point streams —
+`points=True` raises `PushRefused` immediately, naming that cause, instead of
+guessing a channel name or reconnect-looping. And the native streamer's
+opt-in `break_point` signal frames still don't exist on the push feed — if
+you need those, use `LiveScoreStream`. Frame types newer than this SDK are
+still yielded, as a generic `PushFrame`.
 
 Prefer to speak the protocol yourself? `get_ws_token()` (ULTRA) hands you the
 raw connection details:
 
 ```python
 tok = client.get_ws_token()
-tok.ws_url                  # wss://api.livetennisapi.com/connection/websocket
-tok.match_channel(18953)    # "match:18953"
-tok.slate_channel           # "slate:all" — every live score frame
+tok.ws_url                       # wss://api.livetennisapi.com/connection/websocket
+tok.match_channel(18953)         # "match:18953"
+tok.slate_channel                # "slate:all" — every live score frame
+tok.point_match_channel(18953)   # "point:match:18953", or None when not advertised
+tok.point_slate_channel          # "point:slate", or None when not advertised
 ```
 
-Mint a fresh token on reconnect — tokens expire with the connection.
+Mint a fresh token on reconnect — tokens expire with the connection. The
+point helpers return `None` when the mint's vocabulary lacks the point family:
+that key will not receive point frames, so there is no name worth subscribing.
 
 ## Endpoints and tiers
 
@@ -180,6 +230,7 @@ Mint a fresh token on reconnect — tokens expire with the connection.
 | `list_rankings` — per-player as-of records (`player=`) | — | — | — | ✅ |
 | history packages with a non-tape `kind` or `year=` archive listing | — | — | — | ✅³ |
 | `get_match_statistics` (aces, serve split, hold/break %) | — | — | — | ✅ |
+| `get_match_points` `iter_match_points` (per-point stream, REST) | — | — | — | ✅ |
 | `list_rally_matches` `get_rally_match` `get_match_rally` (shot-by-shot) | — | — | — | ✅ |
 | `get_charting_player` `get_charting_match` (Match Charting Project) | — | — | — | ✅ |
 | `get_match_analysis`, `win_probability_p1` / `danger`, WebSocket, `get_ws_token` | — | — | — | ✅ |
@@ -296,16 +347,36 @@ for row in tape.tape:
     print(row.sets, row.games_for_set(0), row.point_winner)
 ```
 
+**The point stream over REST** (`get_match_points` / `iter_match_points`,
+ULTRA) is the same per-point record the streamers push, read as pages: every
+committed point with `seq` greater than `after_seq`, at most 500 per page,
+cursor-paged on the point sequence (`has_more` / `last_seq` — never the page
+length; a live match's newest page is routinely short while more points are
+coming). It works on a live match and on a completed one, and the `seq` on
+each point is identical to the streamed one, so the two reads dedup against
+each other. Read `covers_from_start` before treating `seq` 1 as the match's
+true first point (`None` means the server didn't state it), and
+`pbp_coverage` / `quality` before backtesting.
+
+```python
+for point in client.iter_match_points(18953):
+    print(point.seq, point.winner, point.score)
+```
+
 **Point-in-time rankings** (`list_rankings`) answer what every other ranking
 field cannot: the rank in force ON a date, per system, never collapsed across
 systems. Two modes, two gates — the full published table for one `system` is
 PRO; per-player as-of records (`player=`, repeatable ≤50) are ULTRA. ATP/WTA
 rows carry `previous_rank` (the prior snapshot week); UTR is a rating with
-null rank.
+null rank. `system="elo"` is served too — never included implicitly, only
+when named — with its companion parameters passed through as given: `tour`
+(the Elo leaderboard requires it), `surface`, `archive_player`,
+`min_matches`, `activity_weeks`.
 
 ```python
 page = client.list_rankings(system="atp", as_of="2026-07-01")   # PRO listing
 page = client.list_rankings(player=[925, 1137])                 # ULTRA as-of
+page = client.list_rankings(system="elo", tour="atp")           # Elo leaderboard
 ```
 
 **In-play statistics** (`get_match_statistics`, ULTRA): aces, double faults,
