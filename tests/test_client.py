@@ -171,6 +171,7 @@ class TestErrorMapping:
             lambda c: c.get_charting_player("federer"),
             lambda c: c.get_charting_match(1),
             lambda c: c.get_ws_token(),
+            lambda c: c.get_match_points(1),
         ):
             client = client_returning(
                 httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
@@ -646,6 +647,105 @@ class TestPagination:
         assert seen[0].url.params["limit"] == "200"
 
 
+class TestMatchPoints:
+    """/matches/{id}/points pages on a SEQUENCE cursor, not an offset — the
+    iterator must follow has_more/last_seq and never trust page length."""
+
+    @staticmethod
+    def page_body(seqs, *, has_more, last_seq=None, **extra):
+        body = {
+            "match_id": 18953,
+            "pbp_coverage": "point",
+            "quality": "clean",
+            "points": [
+                {"seq": s, "set": 1, "game": 1, "number": s, "server": 1,
+                 "winner": 1 + (s % 2), "score": {"p1": "15", "p2": "0"},
+                 "sets": [0, 0], "games": [[0], [0]], "ts": "2026-08-17T10:00:00Z"}
+                for s in seqs
+            ],
+            "last_seq": last_seq if last_seq is not None else (seqs[-1] if seqs else None),
+            "has_more": has_more,
+        }
+        body.update(extra)
+        return body
+
+    def test_path_and_after_seq_param(self):
+        client = client_returning(httpx.Response(200, json=self.page_body([], has_more=False)))
+        client.get_match_points(18953)
+        assert str(client.requests[0].url).startswith(f"{BASE}/matches/18953/points")
+        assert client.requests[0].url.params["after_seq"] == "0"
+        client.get_match_points(18953, after_seq=120)
+        assert client.requests[1].url.params["after_seq"] == "120"
+
+    def test_page_parses_points_and_flags(self):
+        from datetime import datetime
+
+        client = client_returning(
+            httpx.Response(200, json=self.page_body([1, 2], has_more=True, covers_from_start=True))
+        )
+        page = client.get_match_points(18953)
+        assert page.match_id == 18953
+        assert page.pbp_coverage == "point"
+        assert page.quality == "clean"
+        assert page.covers_from_start is True
+        assert page.has_more is True
+        assert page.last_seq == 2
+        assert len(page) == 2
+        first = page.points[0]
+        assert first.seq == 1
+        assert first.score == {"p1": "15", "p2": "0"}
+        assert isinstance(first.ts, datetime)
+
+    def test_absent_covers_from_start_reads_none_not_false(self):
+        """Older servers omit the field; None means 'not stated', never 'no'."""
+        client = client_returning(httpx.Response(200, json=self.page_body([1], has_more=False)))
+        assert client.get_match_points(18953).covers_from_start is None
+
+    def test_iterator_follows_last_seq_not_page_length(self):
+        # The first page is SHORT (3 < 500) yet has_more says keep going —
+        # a live match's newest page is routinely short.
+        client = client_returning(
+            httpx.Response(200, json=self.page_body([1, 2, 3], has_more=True)),
+            httpx.Response(200, json=self.page_body([4, 5], has_more=False)),
+        )
+        seqs = [p.seq for p in client.iter_match_points(18953)]
+        assert seqs == [1, 2, 3, 4, 5]
+        assert len(client.requests) == 2
+        assert client.requests[0].url.params["after_seq"] == "0"
+        assert client.requests[1].url.params["after_seq"] == "3"
+
+    def test_iterator_starts_at_the_given_cursor(self):
+        client = client_returning(httpx.Response(200, json=self.page_body([121], has_more=False)))
+        assert [p.seq for p in client.iter_match_points(18953, after_seq=120)] == [121]
+        assert client.requests[0].url.params["after_seq"] == "120"
+
+    def test_iterator_never_loops_on_a_page_with_no_forward_progress(self):
+        # A broken page: has_more says more, but the cursor cannot advance.
+        client = client_returning(
+            httpx.Response(200, json=self.page_body([1, 2, 3], has_more=True)),
+            httpx.Response(200, json=self.page_body([], has_more=True, last_seq=3)),
+        )
+        seqs = [p.seq for p in client.iter_match_points(18953)]
+        assert seqs == [1, 2, 3]
+        assert len(client.requests) == 2  # it stopped instead of hammering
+
+    async def test_async_iterator_mirrors_sync(self):
+        pages = [
+            httpx.Response(200, json=self.page_body([1, 2], has_more=True)),
+            httpx.Response(200, json=self.page_body([3], has_more=False)),
+        ]
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return pages.pop(0) if len(pages) > 1 else pages[0]
+
+        async with AsyncLiveTennisAPI("k", transport=httpx.MockTransport(handler)) as client:
+            seqs = [p.seq async for p in client.iter_match_points(18953)]
+        assert seqs == [1, 2, 3]
+        assert seen[1].url.params["after_seq"] == "2"
+
+
 class TestAsyncClient:
     async def test_async_get(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"id": 1, "tournament": "X"}))
@@ -688,6 +788,7 @@ class TestParity:
             "list_archive_matches", "get_archive_match",
             "list_archive_players", "get_archive_career", "get_h2h",
             "get_match_tape", "get_match_statistics", "list_rankings",
+            "get_match_points", "iter_match_points",
             "list_history_packages", "get_history_package",
             "list_rally_matches", "get_rally_match", "get_match_rally",
             "get_charting_player", "get_charting_match",

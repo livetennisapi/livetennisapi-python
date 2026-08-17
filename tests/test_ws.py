@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 
 import livetennisapi.ws as ws_module
-from livetennisapi import BreakPoint, BreakPointResult, LiveScoreStream, ScoreUpdate
+from livetennisapi import BreakPoint, BreakPointResult, LivePoint, LiveScoreStream, PointUpdate, ScoreUpdate
 
 
 class FakeWS:
@@ -222,10 +222,61 @@ class TestFrameDispatch:
         assert [type(f) for f in yielded] == [ScoreUpdate, BreakPoint, BreakPointResult, ScoreUpdate]
 
 
+class TestPointFrames:
+    """``point`` frames were silently DROPPED before 1.5.0 — a subscription
+    that asked for points must actually see them."""
+
+    POINT_FRAME = {
+        "type": "point",
+        "match_id": 18953,
+        "point": {
+            "seq": 41,
+            "set": 2,
+            "game": 5,
+            "number": 3,
+            "tiebreak": False,
+            "server": 1,
+            "winner": 2,
+            "score": {"p1": "30", "p2": "40"},
+            "sets": [1, 0],
+            "games": [[6, 2], [4, 3]],
+            "ts": "2026-08-17T10:15:03Z",
+        },
+        "pbp_coverage": "point",
+        "quality": "clean",
+    }
+
+    def test_points_signal_is_sent_when_requested(self, monkeypatch):
+        _, subscribe = run_stream(monkeypatch, signals=["points"])
+        assert subscribe["signals"] == ["points"]
+
+    def test_point_frame_yields_point_update_with_nested_live_point(self, monkeypatch):
+        yielded, _ = run_stream(monkeypatch, signals=["points"], frames=[self.POINT_FRAME])
+        assert len(yielded) == 1
+        update = yielded[0]
+        assert isinstance(update, PointUpdate)
+        assert update.match_id == 18953
+        assert update.pbp_coverage == "point"
+        assert update.quality == "clean"
+        assert isinstance(update.point, LivePoint)
+        assert update.point.seq == 41  # the REST-identical dedup/resume key
+        assert update.point.winner == 2
+        assert isinstance(update.point.ts, datetime)
+
+    def test_point_frames_interleave_with_scores_in_order(self, monkeypatch):
+        frames = [
+            {"type": "score", "match_id": 18953, "score": {"sets": [1, 0]}},
+            self.POINT_FRAME,
+            {"type": "score", "match_id": 18953, "score": {"sets": [1, 0]}},
+        ]
+        yielded, _ = run_stream(monkeypatch, signals=["points"], frames=frames)
+        assert [type(f) for f in yielded] == [ScoreUpdate, PointUpdate, ScoreUpdate]
+
+
 def test_stream_frame_union_is_exported():
     from livetennisapi import StreamFrame  # noqa: F401
 
 
 def test_ws_module_all_lists_new_symbols():
-    for name in ("BreakPoint", "BreakPointResult", "StreamFrame"):
+    for name in ("BreakPoint", "BreakPointResult", "PointUpdate", "StreamFrame"):
         assert name in ws_module.__all__
