@@ -464,6 +464,11 @@ class LiveTennisAPI(_BaseClient):
         player: int | list[int] | None = None,
         system: str | list[str] | None = None,
         as_of: str | None = None,
+        tour: str | None = None,
+        surface: str | None = None,
+        archive_player: int | list[int] | None = None,
+        min_matches: int | None = None,
+        activity_weeks: int | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Page:
@@ -479,14 +484,35 @@ class LiveTennisAPI(_BaseClient):
           effective ON OR BEFORE ``as_of`` — never one dated after it.
 
         ``system`` is ``atp`` | ``wta`` | ``itf_jt`` | ``itf_mt`` | ``itf_wt``
-        | ``utr``; ``as_of`` is ``YYYY-MM-DD`` (omit for the latest known).
-        Read ``meta.coverage`` before trusting an empty result — ITF and UTR
-        history begins 2026-07-29 and cannot be reconstructed earlier.
+        | ``utr`` | ``elo``; ``as_of`` is ``YYYY-MM-DD`` (omit for the latest
+        known). Elo is NEVER included implicitly — no mode returns Elo records
+        unless ``system`` names it. Its companion parameters ride through to
+        the server as given: ``tour`` (the Elo leaderboard — the listing mode
+        — requires it), ``surface`` (a per-surface rating instead of the
+        overall one), ``archive_player`` (address archive person ids — the
+        corpus id space archive rows carry — where roster ids do not reach;
+        an id or a list, repeated on the wire), and the leaderboard filters
+        ``min_matches`` / ``activity_weeks``. Read ``meta.coverage`` before
+        trusting an empty result — ITF and UTR history begins 2026-07-29 and
+        cannot be reconstructed earlier.
         """
         return _page(
             self._request(
                 "/rankings",
-                self._params({"player": player, "system": system, "as_of": as_of, "limit": limit, "offset": offset}),
+                self._params(
+                    {
+                        "player": player,
+                        "system": system,
+                        "as_of": as_of,
+                        "tour": tour,
+                        "surface": surface,
+                        "archive_player": archive_player,
+                        "min_matches": min_matches,
+                        "activity_weeks": activity_weeks,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
             ),
             RankingRecord,
         )
@@ -900,13 +926,31 @@ class AsyncLiveTennisAPI(_BaseClient):
         player: int | list[int] | None = None,
         system: str | list[str] | None = None,
         as_of: str | None = None,
+        tour: str | None = None,
+        surface: str | None = None,
+        archive_player: int | list[int] | None = None,
+        min_matches: int | None = None,
+        activity_weeks: int | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Page:
         return _page(
             await self._request(
                 "/rankings",
-                self._params({"player": player, "system": system, "as_of": as_of, "limit": limit, "offset": offset}),
+                self._params(
+                    {
+                        "player": player,
+                        "system": system,
+                        "as_of": as_of,
+                        "tour": tour,
+                        "surface": surface,
+                        "archive_player": archive_player,
+                        "min_matches": min_matches,
+                        "activity_weeks": activity_weeks,
+                        "limit": limit,
+                        "offset": offset,
+                    }
+                ),
             ),
             RankingRecord,
         )

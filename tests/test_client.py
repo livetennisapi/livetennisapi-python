@@ -512,6 +512,30 @@ class TestRequests:
         assert "player" not in params
         assert params["system"] == "atp"
 
+    def test_rankings_elo_params_ride_along(self):
+        """The Elo companion params reach the wire as given — and only when given."""
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_rankings(
+            system="elo",
+            tour="atp",
+            surface="clay",
+            archive_player=[104925, 103819],
+            min_matches=20,
+            activity_weeks=52,
+        )
+        params = client.requests[0].url.params
+        assert params["system"] == "elo"
+        assert params["tour"] == "atp"
+        assert params["surface"] == "clay"
+        assert params.get_list("archive_player") == ["104925", "103819"]
+        assert params["min_matches"] == "20"
+        assert params["activity_weeks"] == "52"
+
+        client.list_rankings(system="atp")
+        params = client.requests[1].url.params
+        for name in ("tour", "surface", "archive_player", "min_matches", "activity_weeks"):
+            assert name not in params
+
     def test_package_paths_and_params(self):
         client = client_returning(httpx.Response(200, json={"data": []}))
         client.list_history_packages(kind="rankings", year="2025")
