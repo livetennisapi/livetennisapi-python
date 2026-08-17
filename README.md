@@ -222,7 +222,7 @@ that key will not receive point frames, so there is no name worth subscribing.
 | `search_players` `get_player` `list_fixtures` | ✅ | ✅ | ✅ | ✅ |
 | `list_tournaments` `get_tournament` | ✅ | ✅ | ✅ | ✅ |
 | `get_usage` (quota-exempt) | ✅ | ✅ | ✅ | ✅ |
-| `list_completed_matches`, `get_match_tape` (point-by-point tape) | — | ✅¹ | ✅ | ✅ |
+| `list_completed_matches`, `get_match_tape` (point-by-point tape), `get_history_coverage` | — | ✅¹ | ✅ | ✅ |
 | `list_archive_matches` `get_archive_match` `list_archive_players` `get_archive_career` `get_h2h` (results archive · head-to-head) | — | ✅¹ | ✅ | ✅ |
 | `list_match_events` `list_markets` `get_market_prices` | — | — | ✅ | ✅ |
 | `list_rankings` — full published table (no `player`) | — | — | ✅ | ✅ |
@@ -396,6 +396,37 @@ distinguishable 404 `not_charted`). `get_charting_player` /
 non-tape kinds and `year=` listings ULTRA) are pre-built monthly exports —
 JSONL is one line per match with coverage meta included, CSV one row per
 point.
+
+## Singles vs doubles, and the coverage table
+
+Every match carries `draw`: `"singles"`, `"doubles"`, or `None` — and the
+`None` is an answer, not a gap. Team ties and team exhibitions never state
+which discipline a rubber was, so those matches carry a null draw rather than
+a guess (`is_doubles` remains, but cannot say "unknown"). The same word
+filters `list_matches`, `list_completed_matches`, `list_tournaments` and
+`list_fixtures`; a null-draw row matches NEITHER filter value, so filtering
+by `singles` and then by `doubles` is not everything.
+
+```python
+page = client.list_completed_matches(tour="itf", draw="singles")
+
+cov = client.get_history_coverage()          # BASIC, or any History plan
+print(cov.as_of, cov.totals)
+for name, bucket in sorted((cov.buckets or {}).items()):
+    print(name, bucket["point_complete"], "of", bucket["completed"])
+```
+
+`get_history_coverage()` states, per `tour_draw` bucket (`atp_singles`,
+`itf_doubles`, …), how many completed matches we hold, how many carry any
+tape, how many have a complete point-by-point tape available, and how many a
+default read serves complete. As of 2026-08-18 the totals were: 174,393
+completed matches; 171,808 (98.5%) with a tape; 91,318 (52.4%) with a
+complete tape available — of which 81,196 (46.6% of completed) were served
+complete on a default read. The buckets are why the draw split exists: on the
+same date ITF **singles** was 51.1% point-complete while ITF **doubles** was
+3.5% — a single `itf` number would have hidden both. The table is a built
+artifact (`as_of` stamps the build): a 503 `coverage_unavailable` means it is
+not built yet, not that coverage is zero.
 
 ## Pagination
 
