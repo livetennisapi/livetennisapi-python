@@ -16,6 +16,7 @@ from livetennisapi.models import (
     ChartingPlayer,
     Fixture,
     HeadToHead,
+    HistoryCoverage,
     HistoryPackage,
     HistoryTape,
     LivePoint,
@@ -202,6 +203,19 @@ class TestMatchNewFields:
     def test_withdrew_absent_means_none(self):
         # Absent means "not a withdrawal, or no evidence" — never a guess.
         assert Match.from_dict({"id": 1}).withdrew is None
+
+    def test_draw_is_three_valued(self):
+        assert Match.from_dict({"id": 1, "draw": "singles"}).draw == "singles"
+        assert Match.from_dict({"id": 1, "draw": "doubles"}).draw == "doubles"
+        # Null is an answer — the draw is UNKNOWN (team ties, team
+        # exhibitions), never coerced to singles.
+        assert Match.from_dict({"id": 1, "draw": None}).draw is None
+        assert Match.from_dict({"id": 1}).draw is None
+
+    def test_draw_rides_beside_the_lossy_is_doubles(self):
+        match = Match.from_dict({"id": 1, "draw": "doubles", "is_doubles": True})
+        assert match.draw == "doubles"
+        assert match.is_doubles is True
 
 
 class TestTournament:
@@ -489,6 +503,22 @@ class TestHistoryPackage:
     def test_rankings_package_counts_players_and_records(self):
         pkg = HistoryPackage.from_dict({"period": "2026-07", "kind": "rankings", "match_count": 2100})
         assert pkg.kind == "rankings"
+
+
+class TestHistoryCoverage:
+    def test_shape_and_as_of(self):
+        cov = HistoryCoverage.from_dict(
+            {"as_of": "2026-08-18T04:15:00Z", "method": "ledger",
+             "buckets": {"atp_singles": {"completed": 9000, "any_tape": 8900,
+                                         "point_complete": 6200,
+                                         "complete_on_default_read": 6000, "share": 0.689}},
+             "totals": {"completed": 9000, "any_tape": 8900, "point_complete": 6200,
+                        "complete_on_default_read": 6000, "share": 0.689}}
+        )
+        assert isinstance(cov.as_of, datetime)
+        assert cov.method == "ledger"
+        assert cov.buckets["atp_singles"]["share"] == 0.689
+        assert cov.totals["point_complete"] == 6200
 
 
 class TestWSToken:

@@ -454,6 +454,39 @@ class TestRequests:
         assert params["player"] == "925"
         assert params["coverage"] == "from_start"
 
+    def test_draw_filter_reaches_every_listing_that_takes_it(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_matches(draw="singles")
+        client.list_completed_matches(tour="itf", draw="doubles")
+        client.list_tournaments(draw="singles")
+        client.list_fixtures(tour="itf", draw="singles")
+        assert client.requests[0].url.params["draw"] == "singles"
+        assert client.requests[1].url.params["draw"] == "doubles"
+        assert client.requests[2].url.params["draw"] == "singles"
+        # list_fixtures took NO filters before 1.6.0 — tour must ride too.
+        assert client.requests[3].url.params["tour"] == "itf"
+        assert client.requests[3].url.params["draw"] == "singles"
+
+    def test_draw_is_omitted_when_not_given(self):
+        client = client_returning(httpx.Response(200, json={"data": []}))
+        client.list_matches()
+        client.list_fixtures()
+        assert "draw" not in client.requests[0].url.params
+        assert "draw" not in client.requests[1].url.params
+        assert "tour" not in client.requests[1].url.params
+
+    def test_bad_draw_is_a_bad_request_with_the_allowed_list_reachable(self):
+        # The server owns draw validation; the SDK passes the value through
+        # and surfaces the refusal with its vocabulary intact.
+        client = client_returning(
+            httpx.Response(400, json={"error": "bad_draw", "allowed": ["singles", "doubles"]}),
+            max_retries=0,
+        )
+        with pytest.raises(BadRequest) as exc:
+            client.list_matches(draw="mixed")
+        assert exc.value.error_code == "bad_draw"
+        assert exc.value.body["allowed"] == ["singles", "doubles"]
+
     def test_tournament_paths(self):
         client = client_returning(httpx.Response(200, json={"data": []}))
         client.list_tournaments("wimbledon", tour="atp")
@@ -746,6 +779,64 @@ class TestMatchPoints:
         assert seen[1].url.params["after_seq"] == "2"
 
 
+class TestHistoryCoverage:
+    """/history/coverage is one measured object, not a list — and its 503 is
+    an answer ("not built yet"), which must stay distinguishable."""
+
+    BODY = {
+        "as_of": "2026-08-18T04:15:00Z",
+        "method": "ledger",
+        "buckets": {
+            "itf_singles": {
+                "completed": 1000,
+                "any_tape": 980,
+                "point_complete": 511,
+                "complete_on_default_read": 440,
+                "share": 0.511,
+            },
+        },
+        "totals": {
+            "completed": 1000,
+            "any_tape": 980,
+            "point_complete": 511,
+            "complete_on_default_read": 440,
+            "share": 0.511,
+        },
+    }
+
+    def test_path_and_shape(self):
+        client = client_returning(httpx.Response(200, json=self.BODY))
+        cov = client.get_history_coverage()
+        assert str(client.requests[0].url).startswith(f"{BASE}/history/coverage")
+        assert isinstance(cov.as_of, datetime)
+        assert cov.method == "ledger"
+        assert cov.buckets["itf_singles"]["point_complete"] == 511
+        assert cov.totals["complete_on_default_read"] == 440
+
+    def test_403_names_basic(self):
+        client = client_returning(
+            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
+        )
+        with pytest.raises(UpgradeRequired) as exc:
+            client.get_history_coverage()
+        assert exc.value.required_tier == "BASIC"
+
+    def test_unbuilt_artifact_is_a_503_with_the_code_readable(self):
+        client = client_returning(
+            httpx.Response(503, json={"error": "coverage_unavailable"}), max_retries=0
+        )
+        with pytest.raises(ServiceUnavailable) as exc:
+            client.get_history_coverage()
+        assert exc.value.error_code == "coverage_unavailable"
+
+    async def test_async_mirrors_sync(self):
+        transport = httpx.MockTransport(lambda r: httpx.Response(200, json=self.BODY))
+        async with AsyncLiveTennisAPI("k", transport=transport) as client:
+            cov = await client.get_history_coverage()
+        assert cov.buckets["itf_singles"]["completed"] == 1000
+        assert isinstance(cov.as_of, datetime)
+
+
 class TestAsyncClient:
     async def test_async_get(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"id": 1, "tournament": "X"}))
@@ -769,6 +860,20 @@ class TestAsyncClient:
         assert page[0].rank == 1
         assert page[0].previous_rank == 2
 
+    async def test_async_draw_filter_mirrors_sync(self):
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json={"data": []})
+
+        async with AsyncLiveTennisAPI("k", transport=httpx.MockTransport(handler)) as client:
+            await client.list_matches(draw="doubles")
+            await client.list_fixtures(tour="atp", draw="singles")
+        assert seen[0].url.params["draw"] == "doubles"
+        assert seen[1].url.params["tour"] == "atp"
+        assert seen[1].url.params["draw"] == "singles"
+
     async def test_async_pagination(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"data": [{"id": 1}]}))
         async with AsyncLiveTennisAPI("k", transport=transport) as client:
@@ -788,6 +893,7 @@ class TestParity:
             "list_archive_matches", "get_archive_match",
             "list_archive_players", "get_archive_career", "get_h2h",
             "get_match_tape", "get_match_statistics", "list_rankings",
+            "get_history_coverage",
             "get_match_points", "iter_match_points",
             "list_history_packages", "get_history_package",
             "list_rally_matches", "get_rally_match", "get_match_rally",
