@@ -746,8 +746,15 @@ class PointsPage(Model):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> PointsPage | None:
         obj = super().from_dict(data)
-        if obj is not None and isinstance(obj.points, list):
+        if obj is None:
+            return None
+        if isinstance(obj.points, list):
             obj.points = [p for p in (LivePoint.from_dict(x) for x in obj.points) if p is not None]
+        else:
+            # A null or garbage ``points`` reads as an empty page — the same
+            # normalization the list endpoints apply to ``data`` — so the
+            # page iterators and the push resume never crash on it.
+            obj.points = []
         return obj
 
     def __iter__(self):

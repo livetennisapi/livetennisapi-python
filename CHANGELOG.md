@@ -64,9 +64,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - Read `pbp_coverage` (`point` | `game`) and `quality` (`clean` |
   `revised`) before treating any point stream as one-row-per-point truth —
   they describe the whole match's stream, on every surface that serves it.
-- **Fully backwards compatible.** Without `signals=["points"]` /
-  `points=True` both streamers behave exactly as 1.4.0; the new
-  `list_rankings` parameters default to absent and send nothing.
+- **Backwards compatible, with one deliberate exception.** Without
+  `signals=["points"]` / `points=True` both streamers behave as 1.4.0, and
+  the new `list_rankings` parameters default to absent and send nothing.
+  The exception: a `PushStream` that subscribed a point channel through the
+  raw `channels` escape hatch now receives typed `PointUpdate` frames where
+  1.4.0 yielded generic `PushFrame` objects — dispatch is by frame type, as
+  documented. The resume machinery (cursors, dedup drops, REST catch-up)
+  stays off for that path; it belongs to the `points=True` opt-in only.
 
 ## [1.4.0] — 2026-08-16
 
