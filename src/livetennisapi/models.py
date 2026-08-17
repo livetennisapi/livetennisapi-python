@@ -54,6 +54,7 @@ __all__ = [
     "ChartingPlayer",
     "ChartingMatch",
     "HistoryPackage",
+    "HistoryCoverage",
     "WSToken",
     "Usage",
 ]
@@ -341,6 +342,12 @@ class Match(Model):
     #: the feed does not distinguish those.
     event_status: str | None = None
     is_doubles: bool | None = None
+    #: ``singles`` | ``doubles`` | ``None`` — three-valued on purpose. ``None``
+    #: means the draw is UNKNOWN (team ties and team exhibitions never state
+    #: which discipline a rubber was), never a guess — and a null-draw match
+    #: matches NEITHER value of the ``draw=`` filter. The older ``is_doubles``
+    #: stays but is lossy (it cannot say "unknown"); branch on this field.
+    draw: str | None = None
     scheduled_time: datetime | None = None
     players: dict[str, Any] | None = None
     score: Score | None = None
@@ -909,6 +916,32 @@ class HistoryPackage(Model):
     row_count: int | None = None
     files: list[dict[str, Any]] | None = None
     built_at: datetime | None = None
+
+
+@dataclass
+class HistoryCoverage(Model):
+    """The measured point-completeness table for the completed archive. **BASIC, or any History plan.**
+
+    A single object, one snapshot: ``as_of`` stamps when the table was built
+    and ``method`` how the numbers were measured — these are built-artifact
+    numbers, not a live count. ``buckets`` is keyed by ``tour_draw`` strings
+    (``atp_singles``, ``itf_doubles``, …); each bucket carries ``completed``,
+    ``any_tape``, ``point_complete`` (a complete point-by-point tape is
+    AVAILABLE), ``complete_on_default_read`` (a default read serves it
+    complete — at most ``point_complete``) and ``share``. ``totals`` is the
+    same shape over all buckets. The two completeness counts differ on
+    purpose: a complete tape can exist for a match a default read does not
+    serve complete. While the artifact is not built the endpoint answers 503
+    ``coverage_unavailable`` — raised as
+    :class:`~livetennisapi.ServiceUnavailable`, never an empty object.
+    """
+
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("as_of",)
+
+    as_of: datetime | None = None
+    method: str | None = None
+    buckets: dict[str, Any] | None = None
+    totals: dict[str, Any] | None = None
 
 
 @dataclass
