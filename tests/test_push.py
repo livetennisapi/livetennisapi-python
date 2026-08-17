@@ -628,6 +628,31 @@ class TestPointFrames:
         assert len(yielded) == 1
         assert isinstance(yielded[0], PointUpdate)
 
+    def test_escape_hatch_point_frames_pass_through_untouched(self, monkeypatch):
+        # channels=["point:slate"] WITHOUT points=True — 1.4.0's documented
+        # escape hatch. The resume machinery belongs to the points=True
+        # opt-in only: no dedup drops, no metered REST calls.
+        fake = FakePushWS(
+            handshake_replies(subscriptions=1),
+            [json.dumps(point_pub(7, s)) for s in (5, 5, 9)],
+        )
+
+        import websockets.sync.client as sync_client
+
+        monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fake)
+        transport, seen = points_transport(TOKEN_BODY, {})
+        stream = PushStream(
+            "twjp_test",
+            transport=transport,
+            auto_reconnect=False,
+            max_retries=0,
+            channels=["point:slate"],
+        )
+        yielded = list(stream)
+        assert [f.point.seq for f in yielded] == [5, 5, 9]  # dups and gaps intact
+        assert all(isinstance(f, PointUpdate) for f in yielded)
+        assert not [r for r in seen if r.url.path.endswith("/points")]
+
 
 class TestPointResume:
     def test_reconnect_catches_up_each_tracked_match_before_live_frames(self, monkeypatch):

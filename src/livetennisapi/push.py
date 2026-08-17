@@ -336,6 +336,10 @@ class PushStream(_BaseClient):
             ) from exc
 
         token = self._mint()
+        # Resolve the channel list BEFORE opening a socket: with ``points=True``
+        # and no advertised point vocabulary this raises the fatal
+        # :class:`PushRefused` without spending a doomed connect+handshake.
+        channel_names = self._channel_names(token)
 
         try:
             ws = connect(
@@ -369,7 +373,7 @@ class PushStream(_BaseClient):
                 self._idle_timeout_s = _DEFAULT_IDLE_TIMEOUT_S
 
             # 2) Subscribe every channel. An error reply names the channel.
-            for offset, channel in enumerate(self._channel_names(token)):
+            for offset, channel in enumerate(channel_names):
                 reply_id = 2 + offset
                 ws.send(json.dumps({"subscribe": {"channel": channel}, "id": reply_id}))
                 self._await_reply(ws, reply_id, deadline, pending, context=f"subscribe to {channel!r}")
@@ -496,17 +500,21 @@ class PushStream(_BaseClient):
     def _handle_point(self, data: Mapping[str, Any]) -> Iterator[PushStreamFrame]:
         """One live ``point`` frame: dedup, gap-fill, cursor bookkeeping.
 
-        With ``points_resume`` off the frame passes straight through. With it
-        on, ``seq`` is the whole story: at or below the cursor it is a
-        duplicate (the catch-up already delivered it) and is dropped; exactly
-        cursor+1 advances; further ahead reveals a gap, which is filled from
-        REST synchronously BEFORE the trigger frame — which then only goes out
-        if the fill did not already cover it.
+        With ``points_resume`` off — or on a stream that never opted in with
+        ``points=True`` (a point frame arriving via the raw ``channels``
+        escape hatch) — the frame passes straight through: the resume
+        machinery, its dedup drops and its metered REST calls all belong to
+        the ``points=True`` opt-in only. With both on, ``seq`` is the whole
+        story: at or below the cursor it is a duplicate (the catch-up already
+        delivered it) and is dropped; exactly cursor+1 advances; further
+        ahead reveals a gap, which is filled from REST synchronously BEFORE
+        the trigger frame — which then only goes out if the fill did not
+        already cover it.
         """
         update = PointUpdate.from_dict(data)
         if update is None:
             return
-        if not self.points_resume:
+        if not (self.points and self.points_resume):
             yield update
             return
         match_id = update.match_id

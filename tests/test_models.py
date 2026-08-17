@@ -410,6 +410,14 @@ class TestLivePoints:
         page = PointsPage.from_dict({"match_id": 1, "points": [], "last_seq": None, "has_more": False})
         assert page.covers_from_start is None
 
+    def test_null_points_reads_as_an_empty_page(self):
+        # A null (or garbage) ``points`` must normalize to [], never leak a
+        # None that crashes the page iterators or the push resume.
+        page = PointsPage.from_dict({"match_id": 1, "points": None, "last_seq": None, "has_more": False})
+        assert page.points == []
+        assert len(page) == 0
+        assert list(page) == []
+
 
 class TestRally:
     def test_rally_match_with_points(self):
