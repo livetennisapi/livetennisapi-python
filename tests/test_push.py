@@ -695,6 +695,97 @@ class TestPointResume:
         _, _, seen = run_points_push(monkeypatch, match_ids=[7])
         assert not [r for r in seen if r.url.path.endswith("/points")]
 
+    def test_a_404_during_catch_up_evicts_that_cursor_instead_of_wedging(self, monkeypatch):
+        # Match 4 aged out server-side (404); match 5 must still catch up.
+        # Without the eviction the NotFound aborts the connection, the
+        # reconnect re-runs catch-up on the same cursors and the identical
+        # 404 fires again before any frame — an eternal reconnect loop.
+        fakes = [
+            FakePushWS(
+                handshake_replies(subscriptions=4),
+                [json.dumps(point_pub(4, 9)), json.dumps(point_pub(5, 2))],
+            ),
+            FakePushWS(handshake_replies(subscriptions=4), [json.dumps(point_pub(5, 5))]),
+        ]
+
+        import websockets.sync.client as sync_client
+
+        monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fakes.pop(0))
+        monkeypatch.setattr(push_module.time, "sleep", lambda s: None)
+
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.url.path.endswith("/ws-token"):
+                return httpx.Response(200, json=POINT_TOKEN_BODY)
+            if "/matches/4/points" in request.url.path:
+                return httpx.Response(404, json={"error": "not_found"})
+            if "/matches/5/points" in request.url.path:
+                return httpx.Response(200, json=points_body(5, [3, 4]))
+            return httpx.Response(404, json={"error": "not_found"})
+
+        stream = PushStream(
+            "twjp_test",
+            transport=httpx.MockTransport(handler),
+            auto_reconnect=True,
+            max_reconnect_attempts=1,
+            max_retries=0,
+            points=True,
+            match_ids=[4, 5],
+        )
+        frames: list = []
+        with pytest.raises(APIConnectionError):
+            for frame in stream:
+                frames.append(frame)
+        assert [(f.match_id, f.point.seq) for f in frames] == [(4, 9), (5, 2), (5, 3), (5, 4), (5, 5)]
+        # Exactly one 404 was spent on match 4 — its cursor is gone, not retried.
+        match4_reqs = [r for r in seen if "/matches/4/points" in r.url.path]
+        assert len(match4_reqs) == 1
+
+    def test_idle_cursors_are_evicted_before_reconnect_catch_up(self, monkeypatch):
+        # A match silent past the eviction window costs nothing at reconnect;
+        # a recently-active match still catches up.
+        fakes = [
+            FakePushWS(
+                handshake_replies(subscriptions=4),
+                [json.dumps(point_pub(4, 9)), json.dumps(point_pub(5, 2))],
+            ),
+            FakePushWS(handshake_replies(subscriptions=4), []),
+        ]
+
+        import websockets.sync.client as sync_client
+
+        monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fakes.pop(0))
+        monkeypatch.setattr(push_module.time, "sleep", lambda s: None)
+
+        transport, seen = points_transport(POINT_TOKEN_BODY, {5: [points_body(5, [3])]})
+        stream = PushStream(
+            "twjp_test",
+            transport=transport,
+            auto_reconnect=True,
+            max_reconnect_attempts=1,
+            max_retries=0,
+            points=True,
+            match_ids=[4, 5],
+        )
+        # Age match 4's cursor past the window as soon as its frame lands.
+        original = push_module.PushStream._handle_point
+
+        def aging(self, data):
+            yield from original(self, data)
+            if data.get("match_id") == 4 and 4 in self._cursor_seen:
+                self._cursor_seen[4] -= push_module._CURSOR_IDLE_EVICT_S + 1
+
+        monkeypatch.setattr(push_module.PushStream, "_handle_point", aging)
+        frames: list = []
+        with pytest.raises(APIConnectionError):
+            for frame in stream:
+                frames.append(frame)
+        point_reqs = [r.url.path for r in seen if r.url.path.endswith("/points")]
+        assert any("/matches/5/points" in p for p in point_reqs)  # active match caught up
+        assert not any("/matches/4/points" in p for p in point_reqs)  # idle match evicted
+
 
 class TestLiveness:
     """Steady-state reads are bounded by the server's advertised ping cadence:
