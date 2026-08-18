@@ -236,19 +236,30 @@ def _cmd_history(client: LiveTennisAPI, args: argparse.Namespace) -> int:
 
 
 def _cmd_watch(client: LiveTennisAPI, args: argparse.Namespace) -> int:
-    from .ws import LiveScoreStream
+    stream: Any
+    if args.push:
+        from .push import PushStream
 
-    topics = [f"match:{args.match}"] if args.match else ["live-scores"]
-    _out(f"subscribing to {topics[0]} — Ctrl-C to stop")
+        target = f"match:{args.match}" if args.match else "slate:all"
+        _out(f"subscribing to {target} over the push feed — Ctrl-C to stop")
+        stream = PushStream(
+            client.api_key,
+            match_ids=[args.match] if args.match else (),
+            base_url=client.base_url,
+        )
+    else:
+        from .ws import LiveScoreStream
 
-    stream = LiveScoreStream(client.api_key, topics=topics, base_url=client.base_url)
+        topics = [f"match:{args.match}"] if args.match else ["live-scores"]
+        _out(f"subscribing to {topics[0]} — Ctrl-C to stop")
+        stream = LiveScoreStream(client.api_key, topics=topics, base_url=client.base_url)
     try:
         with stream:
             for update in stream:
                 if args.json:
                     _out(json.dumps(update.to_dict(), default=str))
                 else:
-                    _out(f"[{update.match_id}] {_format_score(update.score)}")
+                    _out(f"[{update.match_id}] {_format_score(getattr(update, 'score', None))}")
     except KeyboardInterrupt:
         _out("\nstopped")
     return 0
@@ -307,6 +318,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("watch", parents=[common], help="stream live scores over WebSocket (ULTRA)")
     p.add_argument("--match", type=int, default=None, help="watch one match instead of all")
+    p.add_argument(
+        "--push",
+        action="store_true",
+        help="stream over the token-authenticated push feed instead of the "
+        "native WebSocket — recommended for continuous use (the native feed "
+        "is capacity-capped shared infrastructure)",
+    )
     p.set_defaults(func=_cmd_watch)
 
     return parser

@@ -951,7 +951,8 @@ class WSToken(Model):
     ``ws_url`` is the push endpoint and ``channels`` the channel vocabulary:
     ``match:{id}`` per-match streams and ``slate:all`` for every live score
     frame, plus — where the mint advertises them — the point channels
-    (``point:match:{id}`` / ``point:slate``). Frames are the same allowlist
+    (``point:match:{id}`` / ``point:slate``) and the signal channels
+    (``signal:match:{id}`` / ``signal:slate``). Frames are the same allowlist
     score objects the polling endpoints return. The token is short-lived —
     mint a fresh one on reconnect.
 
@@ -998,6 +999,30 @@ class WSToken(Model):
         refusal as :attr:`point_slate_channel`.
         """
         template = (self.channels or {}).get("point_match")
+        if not isinstance(template, str):
+            return None
+        return re.sub(r"\{[^}]*\}", str(match_id), template)
+
+    @property
+    def signal_slate_channel(self) -> str | None:
+        """The all-matches signal channel (``signal:slate``), from the vocabulary.
+
+        Carries the derived signal events — ``break_point`` /
+        ``break_point_result`` / ``divergence``. ``None`` when the mint did
+        not advertise it — this key will not receive signal frames (server
+        gate off, or the plan lacks them), so there is no name worth
+        subscribing.
+        """
+        value = (self.channels or {}).get("signal_slate")
+        return value if isinstance(value, str) else None
+
+    def signal_match_channel(self, match_id: int) -> str | None:
+        """The signal channel for one match, from the server's own template.
+
+        ``None`` when the mint did not advertise the family — same honest
+        refusal as :attr:`signal_slate_channel`.
+        """
+        template = (self.channels or {}).get("signal_match")
         if not isinstance(template, str):
             return None
         return re.sub(r"\{[^}]*\}", str(match_id), template)

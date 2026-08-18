@@ -21,6 +21,8 @@ from websockets.frames import Close
 
 import livetennisapi.push as push_module
 from livetennisapi import (
+    BreakPoint,
+    BreakPointResult,
     LiveTennisAPIError,
     MissingDependencyError,
     PointUpdate,
@@ -51,6 +53,16 @@ POINT_TOKEN_BODY = {
         **TOKEN_BODY["channels"],
         "point_match": "point:match:{match_id}",
         "point_slate": "point:slate",
+    },
+}
+
+#: A mint whose vocabulary ALSO advertises the signal channel family.
+SIGNAL_TOKEN_BODY = {
+    **TOKEN_BODY,
+    "channels": {
+        **TOKEN_BODY["channels"],
+        "signal_match": "signal:match:{match_id}",
+        "signal_slate": "signal:slate",
     },
 }
 
@@ -785,6 +797,241 @@ class TestPointResume:
         point_reqs = [r.url.path for r in seen if r.url.path.endswith("/points")]
         assert any("/matches/5/points" in p for p in point_reqs)  # active match caught up
         assert not any("/matches/4/points" in p for p in point_reqs)  # idle match evicted
+
+
+def bp_pub(match_id: int) -> dict:
+    """One ``break_point`` publication — the exact frame the native WS sends,
+    carried verbatim on the signal channels."""
+    return pub(
+        "signal:slate",
+        {
+            "type": "break_point",
+            "match_id": match_id,
+            "server": 1,
+            "returner": 2,
+            "break_points": 2,
+            "set": 2,
+            "game": 7,
+            "point": "30-40",
+            "win_probability_p1": 0.55,
+            "prob_swing": 0.18,
+            "server_side_favoured": True,
+            "ts": "2026-08-18T10:00:00Z",
+        },
+    )
+
+
+def bpr_pub(match_id: int) -> dict:
+    """One ``break_point_result`` publication, as the signal channels carry it."""
+    return pub(
+        "signal:slate",
+        {
+            "type": "break_point_result",
+            "match_id": match_id,
+            "server": 1,
+            "outcome": "held",
+            "win_probability_p1_after": 0.61,
+            "ts": "2026-08-18T10:01:00Z",
+        },
+    )
+
+
+def div_pub(match_id: int) -> dict:
+    """One ``divergence`` publication — no dedicated model on either streamer."""
+    return pub(
+        "signal:slate",
+        {
+            "type": "divergence",
+            "match_id": match_id,
+            "model_p1": 0.71,
+            "market_p1": 0.55,
+            "edge": 0.16,
+        },
+    )
+
+
+def run_signals_push(monkeypatch, *, messages=None, token_body=None, subscriptions=2, **kwargs):
+    """Drive a ``signals=[…]`` stream (slate + signal channel — two subscribes
+    by default) and return (yielded, fake, requests_seen)."""
+    fake = FakePushWS(handshake_replies(subscriptions=subscriptions), messages or [])
+
+    import websockets.sync.client as sync_client
+
+    monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fake)
+
+    transport, seen = mint_transport(
+        httpx.Response(200, json=token_body if token_body is not None else SIGNAL_TOKEN_BODY)
+    )
+    stream = PushStream(
+        api_key="twjp_test",
+        transport=transport,
+        auto_reconnect=False,
+        max_retries=0,
+        **kwargs,
+    )
+    yielded = list(stream)
+    return yielded, fake, seen
+
+
+class TestSignalChannels:
+    """The signal channels are subscribed ONLY from the mint's own vocabulary;
+    their absence is an honest refusal, never a guessed name — the exact rule
+    the point channels already follow."""
+
+    def test_signals_subscribe_the_advertised_slate_channel(self, monkeypatch):
+        _, fake, _ = run_signals_push(monkeypatch, signals=["break_point"])
+        subscribes = [json.loads(s)["subscribe"]["channel"] for s in fake.sent[1:]]
+        assert subscribes == ["slate:all", "signal:slate"]
+
+    def test_signals_with_match_ids_subscribe_per_match_signal_channels(self, monkeypatch):
+        _, fake, _ = run_signals_push(
+            monkeypatch,
+            signals=["break_point"],
+            match_ids=[18953],
+        )
+        subscribes = [json.loads(s)["subscribe"]["channel"] for s in fake.sent[1:]]
+        assert subscribes == ["match:18953", "signal:match:18953"]
+
+    def test_no_signals_means_no_signal_subscription(self, monkeypatch):
+        # Default behaviour unchanged: the advertised vocabulary alone never
+        # subscribes a channel the caller did not opt into.
+        _, fake, _ = run_signals_push(monkeypatch, subscriptions=1)
+        subscribes = [json.loads(s)["subscribe"]["channel"] for s in fake.sent[1:]]
+        assert subscribes == ["slate:all"]
+
+    def test_absent_vocabulary_raises_the_typed_refusal_naming_the_cause(self, monkeypatch):
+        with pytest.raises(PushRefused) as exc:
+            run_signals_push(monkeypatch, token_body=TOKEN_BODY, signals=["break_point"])
+        message = str(exc.value)
+        assert "signal" in message
+        assert "gate" in message
+        assert "plan" in message
+
+    def test_the_refusal_is_never_reconnect_looped(self, monkeypatch):
+        # Same key, same vocabulary on every reconnect: retrying would only
+        # mint a REST token per doomed attempt.
+        fakes, _, seen, stream = run_reconnecting_push(
+            monkeypatch,
+            fake_factory=lambda: FakePushWS(handshake_replies(subscriptions=2), []),
+            max_reconnect_attempts=5,
+            mint=[httpx.Response(200, json=TOKEN_BODY)],
+            signals=["break_point"],
+        )
+        with pytest.raises(PushRefused):
+            list(stream)
+        assert len(seen) == 1  # one mint — the refusal was immediate
+
+    def test_signals_points_raises_pointing_at_the_points_opt_in(self, monkeypatch):
+        # The native streamer spells the per-point opt-in signals=["points"];
+        # on the push feed that is points=True, and the constructor says so
+        # instead of subscribing a signal channel that never carries points.
+        with pytest.raises(ValueError) as exc:
+            PushStream(api_key="twjp_test", signals=["points"])
+        assert "points=True" in str(exc.value)
+
+    def test_signals_unknown_family_raises_naming_the_vocabulary(self):
+        # A typo'd family would subscribe the signal channels and then filter
+        # out every known kind — a silently empty stream. Refused loudly.
+        with pytest.raises(ValueError) as exc:
+            PushStream(api_key="twjp_test", signals=["breakpoint"])
+        assert "break_point" in str(exc.value)
+        assert "divergence" in str(exc.value)
+
+
+class TestSignalFrames:
+    def test_break_point_frames_yield_the_native_typed_objects(self, monkeypatch):
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(bp_pub(7)), json.dumps(bpr_pub(7))],
+            signals=["break_point"],
+        )
+        assert len(yielded) == 2
+        bp, bpr = yielded
+        assert isinstance(bp, BreakPoint)
+        assert bp.match_id == 7
+        assert bp.returner == 2
+        assert bp.break_points == 2
+        assert bp.prob_swing == 0.18
+        assert isinstance(bpr, BreakPointResult)
+        assert bpr.outcome == "held"
+        assert bpr.win_probability_p1_after == 0.61
+
+    def test_divergence_frames_arrive_as_generic_push_frames(self, monkeypatch):
+        # No dedicated model on either streamer — every field stays reachable
+        # through the generic frame's forward-compatible pass-through.
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(div_pub(7))],
+            signals=["divergence"],
+        )
+        assert len(yielded) == 1
+        frame = yielded[0]
+        assert isinstance(frame, PushFrame)
+        assert frame.type == "divergence"
+        assert frame.match_id == 7
+        assert frame.edge == 0.16
+
+    def test_unrequested_families_are_filtered_out(self, monkeypatch):
+        # The signal channels carry every family; the stream must deliver
+        # only what was asked for — the native streamer's exact behaviour.
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(bp_pub(7)), json.dumps(div_pub(7)), json.dumps(bpr_pub(7))],
+            signals=["break_point"],
+        )
+        assert [f.type for f in yielded] == ["break_point", "break_point_result"]
+
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(bp_pub(7)), json.dumps(div_pub(7)), json.dumps(bpr_pub(7))],
+            signals=["divergence"],
+        )
+        assert [f.type for f in yielded] == ["divergence"]
+
+    def test_both_families_flow_when_both_are_requested(self, monkeypatch):
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(bp_pub(7)), json.dumps(div_pub(7))],
+            signals=["break_point", "divergence"],
+        )
+        assert [f.type for f in yielded] == ["break_point", "divergence"]
+
+    def test_score_frames_still_flow_alongside_signals(self, monkeypatch):
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(TestFrameDispatch.SCORE_PUB), json.dumps(bp_pub(7))],
+            signals=["break_point"],
+        )
+        assert isinstance(yielded[0], ScoreUpdate)
+        assert isinstance(yielded[1], BreakPoint)
+
+    def test_unknown_frame_kinds_survive_the_family_filter(self, monkeypatch):
+        # Only KNOWN unrequested signal kinds are dropped; a frame family
+        # newer than this SDK still reaches the caller as a PushFrame.
+        novel = pub("signal:slate", {"type": "momentum", "match_id": 7, "swing": 0.4})
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(novel)],
+            signals=["break_point"],
+        )
+        assert len(yielded) == 1
+        assert isinstance(yielded[0], PushFrame)
+        assert yielded[0].type == "momentum"
+
+    def test_escape_hatch_signal_frames_pass_through_unfiltered(self, monkeypatch):
+        # channels=["signal:slate"] WITHOUT signals — the raw escape hatch.
+        # The family filter belongs to the signals opt-in only; frames still
+        # arrive typed, mirroring how escape-hatch point frames behave.
+        yielded, _, _ = run_signals_push(
+            monkeypatch,
+            messages=[json.dumps(bp_pub(7)), json.dumps(div_pub(7))],
+            token_body=TOKEN_BODY,
+            channels=["signal:slate"],
+            subscriptions=1,
+        )
+        assert [f.type for f in yielded] == ["break_point", "divergence"]
+        assert isinstance(yielded[0], BreakPoint)
+        assert isinstance(yielded[1], PushFrame)
 
 
 class TestLiveness:

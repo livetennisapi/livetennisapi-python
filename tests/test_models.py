@@ -554,6 +554,25 @@ class TestWSToken:
         assert tok.point_slate_channel is None
         assert tok.point_match_channel(18953) is None
 
+    def test_signal_channels_read_from_the_vocabulary(self):
+        tok = WSToken.from_dict(
+            {"token": "t",
+             "channels": {"match": "match:{id}", "slate": "slate:all",
+                          "signal_match": "signal:match:{match_id}",
+                          "signal_slate": "signal:slate"}}
+        )
+        assert tok.signal_slate_channel == "signal:slate"
+        assert tok.signal_match_channel(18953) == "signal:match:18953"
+
+    def test_absent_signal_vocabulary_is_an_honest_none(self):
+        # Same honest refusal as the point helpers: no advertised family,
+        # no guessed name.
+        tok = WSToken.from_dict(
+            {"token": "t", "channels": {"match": "match:{id}", "slate": "slate:all"}}
+        )
+        assert tok.signal_slate_channel is None
+        assert tok.signal_match_channel(18953) is None
+
 
 class TestUsage:
     def test_shape(self):

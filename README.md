@@ -59,6 +59,7 @@ ID     Tournament            Rd   Players                  Score
 $ livetennis match 18953
 $ livetennis players djokovic
 $ livetennis watch --match 18953     # live WebSocket stream
+$ livetennis watch --push            # the same stream over the push feed — recommended for continuous use
 ```
 
 ## Live score feed (ULTRA)
@@ -66,85 +67,20 @@ $ livetennis watch --match 18953     # live WebSocket stream
 The SDK ships **two** streamers, both ULTRA, both yielding the same
 `ScoreUpdate` objects:
 
-- **`LiveScoreStream`** — the native `/ws` feed. Zero setup beyond the key;
-  the best quick start.
-- **`PushStream`** — the high-fan-out push feed. Token-authenticated, no
-  shared connection ceiling, built for scale — **recommended for continuous
-  / production streaming**. See [below](#the-push-feed-pushstream).
-
-```python
-from livetennisapi import LiveScoreStream
-
-with LiveScoreStream() as stream:
-    for update in stream:
-        print(update.match_id, update.score.sets)
-```
-
-Reconnects automatically with backoff and re-subscribes. Heartbeats are consumed
-internally, so you only see real score changes. It deliberately does **not**
-reconnect on a bad key or an insufficient tier — those raise immediately rather
-than retry forever.
-
-### Break-point signals
-
-Opt in with `signals=["break_point"]` to also receive the headline break-point
-feed. The stream then yields a `BreakPoint` the moment a break point arises and a
-`BreakPointResult` when it resolves, alongside the usual `ScoreUpdate`:
-
-```python
-from livetennisapi import LiveScoreStream, ScoreUpdate, BreakPoint, BreakPointResult
-
-with LiveScoreStream(signals=["break_point"]) as stream:
-    for frame in stream:
-        if isinstance(frame, BreakPoint):
-            print(f"BREAK POINT on match {frame.match_id}: "
-                  f"p{frame.returner} has {frame.break_points} vs server p{frame.server}")
-        elif isinstance(frame, BreakPointResult):
-            print(f"  -> {frame.outcome} (p1 win prob now {frame.win_probability_p1_after})")
-        elif isinstance(frame, ScoreUpdate):
-            print(frame.match_id, frame.score.sets)
-```
-
-With no `signals` the stream behaves exactly as before — score frames only.
-Both the feed and the model fields are ULTRA-only. A runnable example lives in
-[`livetennisapi-starter-python`](https://github.com/livetennisapi/livetennisapi-starter-python).
-
-### The per-point stream
-
-Opt in with `signals=["points"]` to receive one `PointUpdate` per committed
-point — who served, who won it, the score after, and the per-match `seq`
-(monotonic, gapless, starting at 1). That `seq` is the same key REST serves
-from `get_match_points`, so a stream and a REST read deduplicate against each
-other by `seq` alone:
-
-```python
-from livetennisapi import LiveScoreStream, PointUpdate
-
-with LiveScoreStream(signals=["points"]) as stream:
-    for frame in stream:
-        if isinstance(frame, PointUpdate):
-            p = frame.point
-            print(f"match {frame.match_id} point {p.seq}: p{p.winner} won")
-```
-
-Check `frame.pbp_coverage` (`point` | `game`) and `frame.quality` (`clean` |
-`revised`) before treating the stream as one-row-per-point truth. On
-`PushStream` the same frames arrive with `points=True` — see below, including
-the resume machinery the push side adds.
-
-### Model fields ride the WebSocket too
-
-Score frames carry the same ULTRA model fields as REST — `update.score.win_probability_p1`
-and `update.score.danger` are on every frame. A `None` means the model had no
-output for that state, never that the feed withholds them.
+- **`PushStream`** — the high-fan-out push feed. Token-authenticated and
+  built for scale — **the streamer to start with, and the one for
+  continuous / production streaming**.
+- **`LiveScoreStream`** — the native `/ws` feed. Zero setup beyond the key,
+  but every native connection rides capacity-capped shared infrastructure
+  (a concurrent-connection ceiling per key and per server). See
+  [below](#the-native-feed-livescorestream).
 
 ### The push feed (`PushStream`)
 
-For continuous production streaming, use the token-authenticated push feed —
-it has no shared connection ceiling and is built for scale. `PushStream` does
-the whole dance for you: it mints a short-lived token via `/ws-token`, connects
-to the push endpoint, subscribes, answers the server's heartbeats, and on every
-reconnect mints a **fresh** token before re-subscribing:
+`PushStream` does the whole dance for you: it mints a short-lived token via
+`/ws-token`, connects to the push endpoint, subscribes, answers the server's
+heartbeats, and on every reconnect mints a **fresh** token before
+re-subscribing:
 
 ```python
 from livetennisapi import PushStream
@@ -189,14 +125,32 @@ with PushStream(match_ids=[18953], points=True) as stream:
         ...
 ```
 
-Honestly stated: the point channels are **server-gated**. They are subscribed
-only when the token mint's own channel vocabulary advertises them; when it
-does not — the server's point gate is off, or your plan lacks point streams —
-`points=True` raises `PushRefused` immediately, naming that cause, instead of
-guessing a channel name or reconnect-looping. And the native streamer's
-opt-in `break_point` signal frames still don't exist on the push feed — if
-you need those, use `LiveScoreStream`. Frame types newer than this SDK are
-still yielded, as a generic `PushFrame`.
+**Signal frames** ride the push feed too. Opt in with
+`signals=["break_point"]` — the same vocabulary as the native streamer — and
+the stream subscribes the signal channels (`signal:slate`, or
+`signal:match:<id>` per entry of `match_ids`) and yields the same
+`BreakPoint` / `BreakPointResult` objects the native streamer yields;
+`signals=["divergence"]` adds the divergence events (no dedicated model on
+either streamer — each arrives as a generic `PushFrame` with
+`type == "divergence"`). Signal frames are events with no replay: a stream
+that connects mid-break-point does not receive the onset.
+
+```python
+from livetennisapi import PushStream, BreakPoint, BreakPointResult
+
+with PushStream(signals=["break_point"]) as stream:
+    for frame in stream:
+        if isinstance(frame, (BreakPoint, BreakPointResult)):
+            print(frame.type, frame.match_id)
+```
+
+Honestly stated: the point and signal channels are **server-gated**. They
+are subscribed only when the token mint's own channel vocabulary advertises
+them; when it does not — the server's gate is off, or your plan lacks those
+streams — `points=True` (or a non-empty `signals`) raises `PushRefused`
+immediately, naming that cause, instead of guessing a channel name or
+reconnect-looping. Frame types newer than this SDK are still yielded, as a
+generic `PushFrame`.
 
 Prefer to speak the protocol yourself? `get_ws_token()` (ULTRA) hands you the
 raw connection details:
@@ -208,11 +162,86 @@ tok.match_channel(18953)         # "match:18953"
 tok.slate_channel                # "slate:all" — every live score frame
 tok.point_match_channel(18953)   # "point:match:18953", or None when not advertised
 tok.point_slate_channel          # "point:slate", or None when not advertised
+tok.signal_match_channel(18953)  # "signal:match:18953", or None when not advertised
+tok.signal_slate_channel         # "signal:slate", or None when not advertised
 ```
 
 Mint a fresh token on reconnect — tokens expire with the connection. The
-point helpers return `None` when the mint's vocabulary lacks the point family:
-that key will not receive point frames, so there is no name worth subscribing.
+point and signal helpers return `None` when the mint's vocabulary lacks that
+family: that key will not receive those frames, so there is no name worth
+subscribing.
+
+### The native feed (`LiveScoreStream`)
+
+```python
+from livetennisapi import LiveScoreStream
+
+with LiveScoreStream() as stream:
+    for update in stream:
+        print(update.match_id, update.score.sets)
+```
+
+Reconnects automatically with backoff and re-subscribes. Heartbeats are consumed
+internally, so you only see real score changes. It deliberately does **not**
+reconnect on a bad key or an insufficient tier — those raise immediately rather
+than retry forever. One thing to know before leaning on it: every native
+connection pins shared server capacity (a concurrent-connection ceiling per
+key and per server), so for anything always-on, use `PushStream`.
+
+### Break-point signals
+
+Opt in with `signals=["break_point"]` to also receive the headline break-point
+feed. The stream then yields a `BreakPoint` the moment a break point arises and a
+`BreakPointResult` when it resolves, alongside the usual `ScoreUpdate`:
+
+```python
+from livetennisapi import LiveScoreStream, ScoreUpdate, BreakPoint, BreakPointResult
+
+with LiveScoreStream(signals=["break_point"]) as stream:
+    for frame in stream:
+        if isinstance(frame, BreakPoint):
+            print(f"BREAK POINT on match {frame.match_id}: "
+                  f"p{frame.returner} has {frame.break_points} vs server p{frame.server}")
+        elif isinstance(frame, BreakPointResult):
+            print(f"  -> {frame.outcome} (p1 win prob now {frame.win_probability_p1_after})")
+        elif isinstance(frame, ScoreUpdate):
+            print(frame.match_id, frame.score.sets)
+```
+
+With no `signals` the stream behaves exactly as before — score frames only.
+Both the feed and the model fields are ULTRA-only. The same frames arrive on
+`PushStream` with the same `signals=["break_point"]` argument — see above. A
+runnable example lives in
+[`livetennisapi-starter-python`](https://github.com/livetennisapi/livetennisapi-starter-python).
+
+### The per-point stream
+
+Opt in with `signals=["points"]` to receive one `PointUpdate` per committed
+point — who served, who won it, the score after, and the per-match `seq`
+(monotonic, gapless, starting at 1). That `seq` is the same key REST serves
+from `get_match_points`, so a stream and a REST read deduplicate against each
+other by `seq` alone:
+
+```python
+from livetennisapi import LiveScoreStream, PointUpdate
+
+with LiveScoreStream(signals=["points"]) as stream:
+    for frame in stream:
+        if isinstance(frame, PointUpdate):
+            p = frame.point
+            print(f"match {frame.match_id} point {p.seq}: p{p.winner} won")
+```
+
+Check `frame.pbp_coverage` (`point` | `game`) and `frame.quality` (`clean` |
+`revised`) before treating the stream as one-row-per-point truth. On
+`PushStream` the same frames arrive with `points=True` — see above, including
+the resume machinery the push side adds.
+
+### Model fields ride the WebSocket too
+
+Score frames carry the same ULTRA model fields as REST — `update.score.win_probability_p1`
+and `update.score.danger` are on every frame. A `None` means the model had no
+output for that state, never that the feed withholds them.
 
 ## Endpoints and tiers
 
