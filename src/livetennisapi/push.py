@@ -273,10 +273,7 @@ class PushStream(_BaseClient):
             # A typo'd family would subscribe the signal channels and then
             # filter out every known kind — a silently empty stream. Refuse
             # loudly instead, naming the real vocabulary.
-            raise ValueError(
-                f"unknown signal families {unknown!r} — "
-                f"the vocabulary is {sorted(_SIGNAL_FAMILIES)!r}"
-            )
+            raise ValueError(f"unknown signal families {unknown!r} — the vocabulary is {sorted(_SIGNAL_FAMILIES)!r}")
         #: Frame kinds to DROP: the known signal kinds whose family was not
         #: asked for. Only meaningful while ``signals`` is non-empty — with
         #: no opt-in nothing is filtered (a signal frame arriving via the
