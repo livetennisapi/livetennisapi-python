@@ -17,20 +17,39 @@ score objects the native feed sends, ULTRA model fields included.
 
 Channels
 --------
-``slate:all``         every live match (the default)
-``match:<id>``        one specific match — pass ``match_ids=[…]``
-``point:slate``       every committed point — pass ``points=True``
-``point:match:<id>``  one match's points — ``points=True`` with ``match_ids``
+``slate:all``          every live match (the default)
+``match:<id>``         one specific match — pass ``match_ids=[…]``
+``point:slate``        every committed point — pass ``points=True``
+``point:match:<id>``   one match's points — ``points=True`` with ``match_ids``
+``signal:slate``       the derived signal events — pass ``signals=[…]``
+``signal:match:<id>``  one match's signals — ``signals=[…]`` with ``match_ids``
 
 The channel names come from the mint response's own vocabulary, so the server
-can evolve them without an SDK release — and the point channels are
-subscribed ONLY when that vocabulary advertises them. Their absence from the
-mint means this key will not receive point frames (the server's point gate is
-off, or the plan lacks point streams): ``points=True`` then raises
-:class:`~livetennisapi.PushRefused` immediately — an honest refusal, never a
-retry case. The native streamer's opt-in ``break_point`` signal frames still
-do not exist here. Frame types newer than this SDK are still yielded, as a
-generic :class:`PushFrame`.
+can evolve them without an SDK release — and the point and signal channels
+are subscribed ONLY when that vocabulary advertises them. Their absence from
+the mint means this key will not receive those frames (the server's gate is
+off, or the plan lacks them): ``points=True`` — or a non-empty ``signals`` —
+then raises :class:`~livetennisapi.PushRefused` immediately — an honest
+refusal, never a retry case. Frame types newer than this SDK are still
+yielded, as a generic :class:`PushFrame`.
+
+Signals (opt-in, ULTRA)
+-----------------------
+Pass ``signals=["break_point"]`` — the same opt-in vocabulary as the native
+streamer — to also receive the headline break-point feed: a ``break_point``
+frame the instant a break point arises and a ``break_point_result`` frame
+when it resolves, yielded as the same :class:`~livetennisapi.BreakPoint` and
+:class:`~livetennisapi.BreakPointResult` objects the native streamer yields.
+``signals=["divergence"]`` adds the model-vs-market divergence events; they
+have no dedicated model (on either streamer), so each arrives as a generic
+:class:`PushFrame` with ``type == "divergence"``. Divergence frames are
+additionally gated on a server-side flag (exactly as on the native feed): a
+subscribed stream may legitimately carry none while that flag is off. The signal channels carry
+every family, so the stream filters to the families you asked for — the
+exact behaviour of the native ``signals`` subscription. Signal frames are
+events emitted when they occur, with no replay: a stream that connects
+mid-break-point does not receive the onset. With no ``signals`` the stream
+behaves exactly as before.
 
 Delivery model
 --------------
@@ -88,7 +107,7 @@ from .errors import (
     UpgradeRequired,
 )
 from .models import Model, WSToken
-from .ws import PointUpdate, ScoreUpdate
+from .ws import BreakPoint, BreakPointResult, PointUpdate, ScoreUpdate
 
 try:  # `websockets` is an optional extra; _connect() raises helpfully without it
     from websockets.exceptions import ConnectionClosedOK as _ConnectionClosedOK
@@ -147,6 +166,16 @@ _FATAL_REPLY_CODES: dict[int, type[LiveTennisAPIError]] = {
     103: Unauthorized,  # permission denied — the key lacks this channel
 }
 
+#: The signal families ``signals=[…]`` can name — the native streamer's own
+#: opt-in vocabulary — mapped to the frame ``type`` values each one carries.
+#: The signal channels carry every family, so the stream drops the KNOWN
+#: kinds the caller did not ask for (never unknown kinds: a frame family
+#: newer than this SDK still reaches the caller as a :class:`PushFrame`).
+_SIGNAL_FAMILIES: dict[str, tuple[str, ...]] = {
+    "break_point": ("break_point", "break_point_result"),
+    "divergence": ("divergence",),
+}
+
 
 @dataclass
 class PushFrame(Model):
@@ -166,10 +195,13 @@ class PushFrame(Model):
 
 #: Any frame the push stream may yield. ``score`` frames arrive as
 #: :class:`~livetennisapi.ScoreUpdate`; ``point`` frames (``points=True``) as
-#: :class:`~livetennisapi.PointUpdate`; any other frame type as a generic
+#: :class:`~livetennisapi.PointUpdate`; ``break_point`` /
+#: ``break_point_result`` frames (``signals=["break_point"]``) as
+#: :class:`~livetennisapi.BreakPoint` / :class:`~livetennisapi.BreakPointResult`;
+#: any other frame type — ``divergence`` included — as a generic
 #: :class:`PushFrame`. Switch on the concrete type or the ``.type`` field to
 #: tell them apart.
-PushStreamFrame = Union[ScoreUpdate, PointUpdate, PushFrame]
+PushStreamFrame = Union[ScoreUpdate, PointUpdate, BreakPoint, BreakPointResult, PushFrame]
 
 
 class PushStream(_BaseClient):
@@ -183,6 +215,7 @@ class PushStream(_BaseClient):
         channels: Sequence[str] = (),
         points: bool = False,
         points_resume: bool = True,
+        signals: Sequence[str] = (),
         on_gap: Callable[[int, int, int], None] | None = None,
         auto_reconnect: bool = True,
         max_reconnect_attempts: int = 0,
@@ -216,6 +249,42 @@ class PushStream(_BaseClient):
         #: invoked when a live point frame reveals a gap. Filling happens
         #: regardless — the callback observes, it does not decide.
         self.on_gap = on_gap
+        #: Opt-in signal families — the native streamer's own ``signals``
+        #: vocabulary (``break_point``, ``divergence``). Non-empty subscribes
+        #: the signal channels — ``signal:match:{id}`` for each of
+        #: ``match_ids``, or ``signal:slate`` for the whole slate — ON TOP of
+        #: the score channels, from the mint's advertised vocabulary only
+        #: (absence raises :class:`~livetennisapi.PushRefused`, exactly like
+        #: ``points=True``). The channels carry every family; the stream
+        #: filters to the ones named here. Empty (the default) means no
+        #: signal channels — identical to before.
+        self.signals = [s for s in signals if s]
+        if "points" in self.signals:
+            # The native streamer spells the per-point opt-in
+            # signals=["points"]; here the point channels are their own
+            # opt-in with their own resume machinery. Refuse loudly rather
+            # than subscribe a signal channel that will never carry points.
+            raise ValueError(
+                "on the push feed the per-point stream is the points=True "
+                'opt-in — pass points=True instead of signals=["points"]'
+            )
+        unknown = [s for s in self.signals if s not in _SIGNAL_FAMILIES]
+        if unknown:
+            # A typo'd family would subscribe the signal channels and then
+            # filter out every known kind — a silently empty stream. Refuse
+            # loudly instead, naming the real vocabulary.
+            raise ValueError(
+                f"unknown signal families {unknown!r} — "
+                f"the vocabulary is {sorted(_SIGNAL_FAMILIES)!r}"
+            )
+        #: Frame kinds to DROP: the known signal kinds whose family was not
+        #: asked for. Only meaningful while ``signals`` is non-empty — with
+        #: no opt-in nothing is filtered (a signal frame arriving via the
+        #: raw ``channels`` escape hatch passes through, like points do).
+        wanted_kinds = {k for s in self.signals for k in _SIGNAL_FAMILIES.get(s, ())}
+        self._signal_kind_drop = (
+            {k for kinds in _SIGNAL_FAMILIES.values() for k in kinds} - wanted_kinds if self.signals else set()
+        )
         self.auto_reconnect = auto_reconnect
         #: 0 means retry forever.
         self.max_reconnect_attempts = max(0, int(max_reconnect_attempts))
@@ -310,6 +379,8 @@ class PushStream(_BaseClient):
             names.append(token.slate_channel or "slate:all")
         if self.points:
             names.extend(self._point_channel_names(token))
+        if self.signals:
+            names.extend(self._signal_channel_names(token))
         return names
 
     def _point_channel_names(self, token: WSToken) -> list[str]:
@@ -336,6 +407,29 @@ class PushStream(_BaseClient):
             "This key will not receive point frames until that changes."
         )
 
+    def _signal_channel_names(self, token: WSToken) -> list[str]:
+        """Signal channels, read STRICTLY from the mint's advertised vocabulary.
+
+        Same rule as :meth:`_point_channel_names`: when the mint does not
+        advertise the family, subscribing a guessed name would only be
+        refused — so a non-empty ``signals`` raises the typed fatal refusal
+        here instead, naming the cause. Fatal on purpose: the same key gets
+        the same vocabulary on every reconnect, and each doomed retry would
+        mint a REST token against a refusal that cannot clear.
+        """
+        if self.match_ids:
+            names = [token.signal_match_channel(mid) for mid in self.match_ids]
+            if all(name is not None for name in names):
+                return [name for name in names if name is not None]
+        elif token.signal_slate_channel is not None:
+            return [token.signal_slate_channel]
+        raise PushRefused(
+            "signals were requested, but the token mint's channel vocabulary "
+            "does not advertise the signal channels — the server's signal "
+            "feature gate is off, or this key's plan does not include them. "
+            "This key will not receive signal frames until that changes."
+        )
+
     # -- protocol -------------------------------------------------------------
 
     def _connect(self) -> Any:
@@ -351,8 +445,9 @@ class PushStream(_BaseClient):
 
         token = self._mint()
         # Resolve the channel list BEFORE opening a socket: with ``points=True``
-        # and no advertised point vocabulary this raises the fatal
-        # :class:`PushRefused` without spending a doomed connect+handshake.
+        # (or a non-empty ``signals``) and no advertised vocabulary for that
+        # family this raises the fatal :class:`PushRefused` without spending a
+        # doomed connect+handshake.
         channel_names = self._channel_names(token)
 
         try:
@@ -500,12 +595,25 @@ class PushStream(_BaseClient):
         # Dispatch on the frame's own type, never on the channel: the same
         # channel may carry new frame families later.
         kind = data.get("type")
+        if kind in self._signal_kind_drop:
+            # The signal channels carry every family; a KNOWN kind whose
+            # family was not asked for is dropped — the native streamer's
+            # exact behaviour, where the server only sends what was asked.
+            return
         if kind == "score":
             update = ScoreUpdate.from_dict(data)
             if update is not None:
                 yield update
         elif kind == "point":
             yield from self._handle_point(data)
+        elif kind == "break_point":
+            bp = BreakPoint.from_dict(data)
+            if bp is not None:
+                yield bp
+        elif kind == "break_point_result":
+            bpr = BreakPointResult.from_dict(data)
+            if bpr is not None:
+                yield bpr
         else:
             frame = PushFrame.from_dict(data)
             if frame is not None:
@@ -629,9 +737,15 @@ class PushStream(_BaseClient):
         default), every (re)connect first REST-fetches whatever each tracked
         match committed while the socket was down, yielding those points
         BEFORE any live frame, so the per-match ``seq`` order the caller sees
-        never skips. Any other frame type comes as a generic
-        :class:`PushFrame`. Server pings are answered internally and never
-        yielded.
+        never skips. With ``signals=["break_point"]``, ``break_point`` /
+        ``break_point_result`` frames come as
+        :class:`~livetennisapi.BreakPoint` /
+        :class:`~livetennisapi.BreakPointResult` — the same objects the
+        native streamer yields; ``signals=["divergence"]`` adds the
+        divergence events as generic :class:`PushFrame` objects (no
+        dedicated model on either streamer). Any other frame type comes as a
+        generic :class:`PushFrame`. Server pings are answered internally and
+        never yielded.
         """
         attempt = 0
         while not self._closed:

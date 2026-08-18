@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] — 2026-08-18
+
+### Added
+- **Signal frames on the push feed — `PushStream(signals=[…])`.** The same
+  opt-in vocabulary as the native streamer: `signals=["break_point"]`
+  subscribes the signal channels (`signal:slate`, or `signal:match:<id>` per
+  entry of `match_ids`) and yields the same
+  `BreakPoint` / `BreakPointResult` objects `LiveScoreStream` yields;
+  `signals=["divergence"]` adds the divergence events, each a generic
+  `PushFrame` with `type == "divergence"` (no dedicated model on either
+  streamer). The signal channels carry every family, so the stream filters
+  to the families you asked for — the exact behaviour of the native
+  `signals` subscription. Signal frames are events with no replay: a stream
+  that connects mid-break-point does not receive the onset. Break-point and
+  divergence users no longer need the capacity-capped native feed for them.
+  - Like the point channels, the signal channels are subscribed ONLY from
+    the token mint's advertised vocabulary: when the mint does not advertise
+    them (server gate off, or the plan lacks them), a non-empty `signals`
+    raises `PushRefused` immediately, naming that cause — never a guessed
+    channel name, never a reconnect loop.
+  - `signals=["points"]` on `PushStream` raises `ValueError` pointing at
+    `points=True` — on the push feed the per-point stream is its own opt-in
+    with its own resume machinery.
+  - `WSToken` gains the matching vocabulary helpers:
+    `signal_slate_channel` and `signal_match_channel(match_id)`, returning
+    `None` when the mint does not advertise the family.
+- **`livetennis watch --push`** streams over the push feed instead of the
+  native WebSocket, with identical output — recommended for continuous use
+  (the native feed is capacity-capped shared infrastructure). Without the
+  flag the command behaves exactly as before.
+
+### Changed
+- README: `PushStream` is now the first streaming example; the native
+  streamer follows with its shared-capacity ceiling stated. The claim that
+  break-point signal frames exist only on the native streamer is gone —
+  as of this release it is no longer true.
+
+### Notes
+- **Fully backwards compatible.** A `PushStream` without `signals` behaves
+  exactly as before; the CLI without `--push` is unchanged.
+
 ## [1.6.0] — 2026-08-18
 
 ### Added
