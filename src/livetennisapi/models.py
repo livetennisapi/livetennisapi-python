@@ -312,7 +312,7 @@ class Match(Model):
     available" rather than "no market exists".
     """
 
-    _datetime_fields: ClassVar[tuple[str, ...]] = ("scheduled_time",)
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("scheduled_time", "event_status_updated_at")
 
     id: int | None = None
     tournament: str | None = None
@@ -341,6 +341,12 @@ class Match(Model):
     #: ``Interrupted``. ``None`` means completed normally OR never resolved —
     #: the feed does not distinguish those.
     event_status: str | None = None
+    #: *(added 2026-08-19)* the instant the current :attr:`event_status` was
+    #: recorded, UTC. Bumps only when the value changes — a re-read of the
+    #: same status never moves it — and a clear back to ``None`` bumps it
+    #: too. ``None`` while the status has never changed since the field was
+    #: introduced: never backfilled, never guessed.
+    event_status_updated_at: datetime | None = None
     is_doubles: bool | None = None
     #: ``singles`` | ``doubles`` | ``None`` — three-valued on purpose. ``None``
     #: means the draw is UNKNOWN (team ties and team exhibitions never state
