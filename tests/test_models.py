@@ -204,6 +204,19 @@ class TestMatchNewFields:
         # Absent means "not a withdrawal, or no evidence" — never a guess.
         assert Match.from_dict({"id": 1}).withdrew is None
 
+    def test_event_status_updated_at_is_parsed(self):
+        # The instant the current event_status was recorded (added 2026-08-19).
+        match = Match.from_dict(
+            {"id": 1, "event_status": "Walk Over", "event_status_updated_at": "2026-08-19T09:15:00Z"}
+        )
+        assert isinstance(match.event_status_updated_at, datetime)
+        assert match.event_status_updated_at.tzinfo is not None
+
+    def test_event_status_updated_at_is_never_backfilled(self):
+        # Null (or absent — every match from before the field existed) stays None.
+        assert Match.from_dict({"id": 1}).event_status_updated_at is None
+        assert Match.from_dict({"id": 1, "event_status_updated_at": None}).event_status_updated_at is None
+
     def test_draw_is_three_valued(self):
         assert Match.from_dict({"id": 1, "draw": "singles"}).draw == "singles"
         assert Match.from_dict({"id": 1, "draw": "doubles"}).draw == "doubles"
