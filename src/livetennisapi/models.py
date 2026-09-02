@@ -362,6 +362,19 @@ class Match(Model):
     #: present only when ``event_status`` is ``Retired``/``Walk Over`` and the
     #: winner is derivable. Absent means "not a withdrawal, or no evidence".
     withdrew: int | None = None
+    #: *(added 2026-09-02)* whether a model thesis or profile exists for this
+    #: match — on every list row and the detail, every tier. Filter the slate
+    #: on this before calling
+    #: :meth:`~livetennisapi.LiveTennisAPI.get_match_analysis`, which answers
+    #: ``404 no_analysis`` about the same fact. ``None`` only when talking to
+    #: a server that predates the field.
+    has_analysis: bool | None = None
+    #: *(added 2026-09-02)* whether a match-winner market is mapped to this
+    #: match — every tier. Same role for
+    #: :meth:`~livetennisapi.LiveTennisAPI.get_market_prices` (``404
+    #: no_market``). ``None`` only when talking to a server that predates the
+    #: field.
+    has_market: bool | None = None
     market: Market | None = None
     analysis: Analysis | None = None
 

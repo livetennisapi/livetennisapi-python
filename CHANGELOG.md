@@ -3,7 +3,18 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.7.0] — 2026-08-18
+## [1.8.0] — 2026-09-02
+
+### Added
+- **`Match.has_analysis` and `Match.has_market`** — two optional booleans on
+  every row of `list_matches()` and on `get_match()`, every tier (server side
+  since 2026-09-02, spec 1.9.0). `has_analysis` says whether a model thesis or
+  profile exists for the match — the same fact `get_match_analysis()` answers
+  `404 no_analysis` about; `has_market` says whether a match-winner market is
+  mapped to it — the same fact `get_market_prices()` answers `404 no_market`
+  about. Filter the slate on them first instead of spending one 404 per match.
+  Both are `None` (never a guessed `False`) when the server predates the field.
+
 
 ### Added
 - **Signal frames on the push feed — `PushStream(signals=[…])`.** The same

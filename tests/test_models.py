@@ -217,6 +217,25 @@ class TestMatchNewFields:
         assert Match.from_dict({"id": 1}).event_status_updated_at is None
         assert Match.from_dict({"id": 1, "event_status_updated_at": None}).event_status_updated_at is None
 
+    def test_has_analysis_and_has_market_present(self):
+        # Two booleans on every list row and the detail, every tier (added 2026-09-02):
+        # the same facts /matches/{id}/analysis and /markets/{id}/prices answer 404 about.
+        match = Match.from_dict({"id": 1, "has_analysis": True, "has_market": True})
+        assert match.has_analysis is True
+        assert match.has_market is True
+
+    def test_has_analysis_and_has_market_false(self):
+        # False is an answer, not an absence: nothing computed / no market mapped.
+        match = Match.from_dict({"id": 1, "has_analysis": False, "has_market": False})
+        assert match.has_analysis is False
+        assert match.has_market is False
+
+    def test_has_analysis_and_has_market_absent_means_none(self):
+        # A server that predates the field sends nothing — None, never a guessed False.
+        match = Match.from_dict({"id": 1})
+        assert match.has_analysis is None
+        assert match.has_market is None
+
     def test_draw_is_three_valued(self):
         assert Match.from_dict({"id": 1, "draw": "singles"}).draw == "singles"
         assert Match.from_dict({"id": 1, "draw": "doubles"}).draw == "doubles"
