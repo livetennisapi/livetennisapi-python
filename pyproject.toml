@@ -9,7 +9,7 @@ description = "Official Python client for the Live Tennis API — real-time tenn
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Live Tennis API", email = "hello@livetennisapi.com" }]
+authors = [{ name = "Synapse Research Ltd", email = "hello@livetennisapi.com" }]
 keywords = [
     "tennis", "tennis-api", "live-scores", "sports", "sports-api",
     "sports-data", "atp", "wta", "challenger", "itf", "juniors", "rankings",
@@ -59,6 +59,7 @@ Repository = "https://github.com/livetennisapi/livetennisapi-python"
 Issues = "https://github.com/livetennisapi/livetennisapi-python/issues"
 Changelog = "https://github.com/livetennisapi/livetennisapi-python/blob/main/CHANGELOG.md"
 Pricing = "https://livetennisapi.com/#pricing"
+Author = "https://synapsereality.io"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/livetennisapi"]
