@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-10-22
+
+### Added
+- **`player_stats(player_id, from_=None, to=None, surface=None, level=None, last=None)`**
+  on both clients, for `GET /players/{id}/stats` (spec 1.13.61). It returns a
+  `PlayerStats`: one player's record over our completed singles matches,
+  2023 onward. `records` is PRO and holds W/L overall, over the last 12
+  months, and by surface, venue, level and season. It also holds the
+  set-based record, withdrawals, exclusions and `recent`, the last N matches.
+  `serve_return` is ULTRA, and `None` below it because the server omits the
+  key. `from_` is sent as `?from=`, as on `list_matches`. A 403 names PRO.
+- **`Player.height_cm` and `Player.doubles_ranking`** from `get_player()`.
+  Both are `None` on a FREE key, and on an older server that omits them.
+
 ## [1.8.0] — 2026-09-02
 
 ### Added

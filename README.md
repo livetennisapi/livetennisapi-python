@@ -255,6 +255,7 @@ output for that state, never that the feed withholds them.
 | `list_archive_matches` `get_archive_match` `list_archive_players` `get_archive_career` `get_h2h` (results archive · head-to-head) | — | ✅¹ | ✅ | ✅ |
 | `list_match_events` `list_markets` `get_market_prices` | — | — | ✅ | ✅ |
 | `list_rankings` — full published table (no `player`) | — | — | ✅ | ✅ |
+| `player_stats` — W/L splits, set-based record, recent matches (`serve_return` is ULTRA) | — | — | ✅ | ✅ |
 | `list_history_packages` `get_history_package` (`kind="tape"`) | — | — | ✅³ | ✅ |
 | `list_rankings` — per-player as-of records (`player=`) | — | — | — | ✅ |
 | history packages with a non-tape `kind` or `year=` archive listing | — | — | — | ✅³ |

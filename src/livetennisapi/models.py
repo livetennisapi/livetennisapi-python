@@ -42,6 +42,7 @@ __all__ = [
     "ArchivePlayerBio",
     "ArchiveCareer",
     "HeadToHead",
+    "PlayerStats",
     "TapeRow",
     "TapeMeta",
     "HistoryTape",
@@ -215,6 +216,15 @@ class Player(Model):
     backhand: int | None = None
     birthday: date | None = None
     is_doubles_team: bool | None = None
+    #: Height in centimetres from the results archive's record of the same
+    #: person. Single-player endpoint only; paid tiers, ``None`` on a FREE key
+    #: and whenever no height is held. Never inferred.
+    height_cm: int | None = None
+    #: ``{"rank", "points", "observed_on"}`` — the current position on the
+    #: official ATP/WTA doubles table. Single-player endpoint only; paid tiers,
+    #: ``None`` on a FREE key, off the table, or last seen over 21 days ago.
+    #: Never copied into ``ranking``, which stays the singles position.
+    doubles_ranking: dict[str, Any] | None = None
     #: Only populated by the single-player endpoint.
     stats: dict[str, Any] | None = None
 
@@ -545,6 +555,37 @@ class ArchiveCareer(Model):
     record: dict[str, Any] | None = None
     by_year: list[dict[str, Any]] | None = None
     serve: dict[str, Any] | None = None
+
+
+@dataclass
+class PlayerStats(Model):
+    """One player's record over our completed singles matches (2023 onward).
+
+    ``records`` is **PRO**: W/L ``overall``, ``last_12_months``,
+    ``by_surface``, ``by_venue``, ``by_level`` and ``by_season``; the
+    set-based record under ``sets`` (tiebreaks, deciding sets, after winning
+    or losing the first set, comebacks, sets won and lost); ``withdrawals``
+    given and received; ``excluded`` counts by reason; and ``recent``, the
+    last N matches newest first. Every count carries its sample size and a
+    percentage is ``None``, never 0, on an empty sample.
+
+    ``serve_return`` is **ULTRA**: the per-match statistics summed over the
+    window, each ratio as numerator / denominator / pct with the matches it
+    was summed over. Below ULTRA the server omits the key, so it is ``None``
+    here. For 1968–2022 use :meth:`LiveTennisAPI.get_archive_career`.
+    """
+
+    player: dict[str, Any] | None = None
+    window: dict[str, Any] | None = None
+    filters: dict[str, Any] | None = None
+    records: dict[str, Any] | None = None
+    serve_return: dict[str, Any] | None = None
+    meta: dict[str, Any] | None = None
+
+    @property
+    def recent(self) -> list[dict[str, Any]]:
+        """``records["recent"]``, newest first, or ``[]`` when absent."""
+        return list((self.records or {}).get("recent") or [])
 
 
 @dataclass

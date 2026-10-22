@@ -837,6 +837,73 @@ class TestHistoryCoverage:
         assert isinstance(cov.as_of, datetime)
 
 
+class TestPlayerStats:
+    """GET /players/{id}/stats: records are PRO, serve_return is ULTRA."""
+
+    BODY = {
+        "player": {"id": 925, "name": "A. Player"},
+        "window": {"from": "2025-01-01T00:00:00Z", "to": "2025-12-31T23:59:59Z"},
+        "filters": {"surface": "clay", "level": "atp", "last": 5},
+        "records": {
+            "overall": {"matches": 10, "wins": 7, "losses": 3, "win_pct": 70.0},
+            "by_surface": {"clay": {"matches": 10, "wins": 7, "losses": 3, "win_pct": 70.0}},
+            "sets": {"tiebreaks": {"played": 0, "won": 0, "lost": 0, "win_pct": None}},
+            "recent": [{"match_id": 1, "won": True, "outcome": "completed"}],
+        },
+        "meta": {"generated_at": "2026-10-22T10:00:00Z"},
+    }
+
+    def test_path_params_and_shape(self):
+        client = client_returning(httpx.Response(200, json=self.BODY))
+        stats = client.player_stats(925, from_="2025-01-01", to="2025-12-31", surface="clay", level="atp", last=5)
+        req = client.requests[0]
+        assert str(req.url).startswith(f"{BASE}/players/925/stats")
+        params = req.url.params
+        assert params["from"] == "2025-01-01"
+        assert params["to"] == "2025-12-31"
+        assert params["surface"] == "clay"
+        assert params["level"] == "atp"
+        assert params["last"] == "5"
+        assert "from_" not in params
+        assert stats.records["overall"]["wins"] == 7
+        assert stats.records["sets"]["tiebreaks"]["win_pct"] is None
+        assert stats.recent[0]["match_id"] == 1
+        # Below ULTRA the server omits the key.
+        assert stats.serve_return is None
+
+    def test_no_filters_sends_no_params(self):
+        client = client_returning(httpx.Response(200, json=self.BODY))
+        client.player_stats(925)
+        assert dict(client.requests[0].url.params) == {}
+
+    def test_403_names_pro(self):
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
+        with pytest.raises(UpgradeRequired) as exc:
+            client.player_stats(925)
+        assert exc.value.required_tier == "PRO"
+
+    def test_doubles_team_is_a_bad_request(self):
+        client = client_returning(httpx.Response(400, json={"error": "doubles_not_supported"}), max_retries=0)
+        with pytest.raises(BadRequest) as exc:
+            client.player_stats(1)
+        assert exc.value.error_code == "doubles_not_supported"
+
+    async def test_async_mirrors_sync(self):
+        seen = []
+        body = dict(self.BODY, serve_return={"matches": 10, "matches_with_stats": 8})
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json=body)
+
+        async with AsyncLiveTennisAPI("k", transport=httpx.MockTransport(handler)) as client:
+            stats = await client.player_stats(925, from_="2025-01-01", last=3)
+        assert seen[0].url.path.endswith("/players/925/stats")
+        assert seen[0].url.params["from"] == "2025-01-01"
+        assert seen[0].url.params["last"] == "3"
+        assert stats.serve_return["matches_with_stats"] == 8
+
+
 class TestAsyncClient:
     async def test_async_get(self):
         transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"id": 1, "tournament": "X"}))
@@ -887,7 +954,7 @@ class TestParity:
         endpoints = {
             "health", "list_matches", "get_match", "get_match_score",
             "list_match_events", "get_match_analysis", "search_players",
-            "get_player", "list_markets", "get_market_prices",
+            "get_player", "player_stats", "list_markets", "get_market_prices",
             "list_completed_matches", "list_fixtures", "paginate",
             "list_tournaments", "get_tournament",
             "list_archive_matches", "get_archive_match",

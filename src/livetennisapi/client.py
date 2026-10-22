@@ -41,6 +41,7 @@ from .models import (
     MatchStatistics,
     Page,
     Player,
+    PlayerStats,
     PointsPage,
     RallyMatch,
     RankingRecord,
@@ -223,8 +224,42 @@ class LiveTennisAPI(_BaseClient):
         )
 
     def get_player(self, player_id: int) -> Player | None:
-        """One player's bio, ranking and cached stats."""
+        """One player's bio, ranking and cached stats.
+
+        On a paid key the profile also carries ``height_cm`` and
+        ``doubles_ranking``; both are ``None`` on a FREE key.
+        """
         return Player.from_dict(self._request(f"/players/{player_id}"))
+
+    def player_stats(
+        self,
+        player_id: int,
+        from_: str | None = None,
+        to: str | None = None,
+        surface: str | None = None,
+        level: str | None = None,
+        last: int | None = None,
+    ) -> PlayerStats | None:
+        """One player's record over our completed singles matches. **PRO**; ``serve_return`` **ULTRA**.
+
+        - ``from_`` / ``to`` — the window by scheduled start, ``YYYY-MM-DD``
+          or ISO-8601 UTC; sent as ``?from=`` / ``?to=``. The server default
+          is the 365 days ending now.
+        - ``surface`` — ``hard`` | ``clay`` | ``grass`` | ``indoor``
+          (``indoor`` keeps matches stated indoor, on any surface).
+        - ``level`` — ``atp`` | ``wta`` | ``challenger`` | ``itf`` | ``juniors``.
+        - ``last`` — how many recent matches ``records["recent"]`` lists,
+          1 to 50 (server default 20).
+
+        A doubles-team id raises :class:`~livetennisapi.BadRequest` with
+        ``error_code == "doubles_not_supported"``.
+        """
+        return PlayerStats.from_dict(
+            self._request(
+                f"/players/{player_id}/stats",
+                self._params({"from": from_, "to": to, "surface": surface, "level": level, "last": last}),
+            )
+        )
 
     def list_markets(self, match_id: int) -> Page:
         """Match-winner market(s) for a match. **PRO.**"""
@@ -839,6 +874,22 @@ class AsyncLiveTennisAPI(_BaseClient):
 
     async def get_player(self, player_id: int) -> Player | None:
         return Player.from_dict(await self._request(f"/players/{player_id}"))
+
+    async def player_stats(
+        self,
+        player_id: int,
+        from_: str | None = None,
+        to: str | None = None,
+        surface: str | None = None,
+        level: str | None = None,
+        last: int | None = None,
+    ) -> PlayerStats | None:
+        return PlayerStats.from_dict(
+            await self._request(
+                f"/players/{player_id}/stats",
+                self._params({"from": from_, "to": to, "surface": surface, "level": level, "last": last}),
+            )
+        )
 
     async def list_markets(self, match_id: int) -> Page:
         return _page(await self._request("/markets", {"match_id": match_id}), Market)

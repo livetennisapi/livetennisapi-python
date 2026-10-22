@@ -15,7 +15,7 @@ Documentation: https://docs.livetennisapi.com
 
 from __future__ import annotations
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 from .client import AsyncLiveTennisAPI, LiveTennisAPI
 from .errors import (
@@ -56,6 +56,7 @@ from .models import (
     Model,
     Page,
     Player,
+    PlayerStats,
     PointsPage,
     Price,
     RallyMatch,
@@ -92,6 +93,7 @@ __all__ = [
     "ArchivePlayerBio",
     "ArchiveCareer",
     "HeadToHead",
+    "PlayerStats",
     "TapeRow",
     "TapeMeta",
     "HistoryTape",

@@ -167,6 +167,20 @@ class TestPlayer:
     def test_null_birthday(self):
         assert Player.from_dict({"id": 1, "birthday": None}).birthday is None
 
+    def test_height_and_doubles_ranking(self):
+        player = Player.from_dict(
+            {"id": 1, "height_cm": 188, "doubles_ranking": {"rank": 12, "points": 3400, "observed_on": "2026-10-19"}}
+        )
+        assert player.height_cm == 188
+        assert player.doubles_ranking["rank"] == 12
+
+    def test_free_key_profile_fields_are_none(self):
+        player = Player.from_dict({"id": 1, "height_cm": None, "doubles_ranking": None})
+        assert player.height_cm is None
+        assert player.doubles_ranking is None
+        # An older server omits them entirely.
+        assert Player.from_dict({"id": 1}).height_cm is None
+
 
 class TestFixture:
     def test_event_date_is_parsed(self):

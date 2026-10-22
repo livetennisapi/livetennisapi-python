@@ -58,6 +58,9 @@ def _required_tier_for(path: str, params: Mapping[str, Any] | None = None) -> st
     if "/history/packages" in path:
         kind = str(params.get("kind") or "tape")
         return "ULTRA" if kind != "tape" or params.get("year") else "PRO"
+    if path.startswith("/players/") and path.rstrip("/").endswith("/stats"):
+        # ``records`` is PRO; ULTRA only adds ``serve_return``, so a 403 means PRO.
+        return "PRO"
     if path.rstrip("/").endswith("/matches") and "/history" not in path and params.get("status") == "completed":
         return "BASIC"
     for marker, tier in _TIER_REQUIREMENTS:
