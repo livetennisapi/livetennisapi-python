@@ -873,7 +873,8 @@ class TestPlayerStats:
 
     def test_null_opponent_passes_through(self):
         # The API sends opponent null when the match row holds no opponent id.
-        body = {"records": {"recent": [{"match_id": 2, "opponent": None, "won": True, "outcome": "walkover", "score": None}]}}
+        row = {"match_id": 2, "opponent": None, "won": True, "outcome": "walkover", "score": None}
+        body = {"records": {"recent": [row]}}
         client = client_returning(httpx.Response(200, json=body))
         stats = client.player_stats(925)
         assert stats.recent[0]["opponent"] is None
@@ -887,8 +888,10 @@ class TestPlayerStats:
         # The stored per-set lists pass through as held: a None inside games is
         # an unknown set, kept in position, never 0 and never dropped. And
         # serve_return keeps matches_incomplete, the count left out of every sum.
+        score = {"sets": [2, 0], "games": [[6, None], [4, 0]]}
+        row = {"match_id": 3, "won": True, "outcome": "completed", "score": score}
         body = {
-            "records": {"recent": [{"match_id": 3, "won": True, "outcome": "completed", "score": {"sets": [2, 0], "games": [[6, None], [4, 0]]}}]},
+            "records": {"recent": [row]},
             "serve_return": {"matches": 3, "matches_with_stats": 2, "matches_incomplete": 1},
         }
         client = client_returning(httpx.Response(200, json=body))
