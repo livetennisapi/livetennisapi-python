@@ -883,6 +883,19 @@ class TestPlayerStats:
         client.player_stats(925)
         assert dict(client.requests[0].url.params) == {}
 
+    def test_null_games_and_matches_incomplete_pass_through(self):
+        # The stored per-set lists pass through as held: a None inside games is
+        # an unknown set, kept in position, never 0 and never dropped. And
+        # serve_return keeps matches_incomplete, the count left out of every sum.
+        body = {
+            "records": {"recent": [{"match_id": 3, "won": True, "outcome": "completed", "score": {"sets": [2, 0], "games": [[6, None], [4, 0]]}}]},
+            "serve_return": {"matches": 3, "matches_with_stats": 2, "matches_incomplete": 1},
+        }
+        client = client_returning(httpx.Response(200, json=body))
+        stats = client.player_stats(925)
+        assert stats.recent[0]["score"]["games"] == [[6, None], [4, 0]]
+        assert stats.serve_return["matches_incomplete"] == 1
+
     def test_403_names_pro(self):
         client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
