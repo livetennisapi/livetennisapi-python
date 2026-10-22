@@ -14,6 +14,8 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   set-based record, withdrawals, exclusions and `recent`, the last N matches.
   `serve_return` is ULTRA, and `None` below it because the server omits the
   key. `from_` is sent as `?from=`, as on `list_matches`. A 403 names PRO.
+  A `recent` row's `opponent` is `None` when the match row holds no opponent
+  id.
 - **`Player.height_cm` and `Player.doubles_ranking`** from `get_player()`.
   Both are `None` on a FREE key, and on an older server that omits them.
 

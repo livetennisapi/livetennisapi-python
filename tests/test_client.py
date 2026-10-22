@@ -871,6 +871,13 @@ class TestPlayerStats:
         # Below ULTRA the server omits the key.
         assert stats.serve_return is None
 
+    def test_null_opponent_passes_through(self):
+        # The API sends opponent null when the match row holds no opponent id.
+        body = {"records": {"recent": [{"match_id": 2, "opponent": None, "won": True, "outcome": "walkover", "score": None}]}}
+        client = client_returning(httpx.Response(200, json=body))
+        stats = client.player_stats(925)
+        assert stats.recent[0]["opponent"] is None
+
     def test_no_filters_sends_no_params(self):
         client = client_returning(httpx.Response(200, json=self.BODY))
         client.player_stats(925)

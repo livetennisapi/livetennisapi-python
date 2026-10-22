@@ -584,7 +584,14 @@ class PlayerStats(Model):
 
     @property
     def recent(self) -> list[dict[str, Any]]:
-        """``records["recent"]``, newest first, or ``[]`` when absent."""
+        """``records["recent"]``, newest first, or ``[]`` when absent.
+
+        Each row is a plain dict. Its ``opponent`` is ``Optional``: ``None``
+        when the match row holds no opponent id. ``opponent["name"]`` is
+        ``None`` when the opponent is not on the roster read. Each value in
+        ``score["games"]`` may be ``None``, as the stored lists pass through
+        without coercion.
+        """
         return list((self.records or {}).get("recent") or [])
 
 
