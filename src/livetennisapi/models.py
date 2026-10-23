@@ -177,9 +177,20 @@ class Score(Model):
     ``win_probability_p1`` and ``danger`` are present only on the ULTRA tier —
     on REST and on the WebSocket score frames alike. A null value means the
     model had no output for that state, not that the channel withholds it.
+    On a push-feed frame whose ``model`` is ``"pending"`` all four model keys
+    (``win_probability_p1``, ``danger``, ``win_probability_p1_model``,
+    ``win_probability_meta``) are present and ``None``: the model run for that
+    state has not finished yet, and the ``"ready"`` frame of the same
+    ``sequence`` carries the values.
+
+    ``sequence`` is our per-match accept counter for this state, counting from
+    1 (since 2026-09-26) — the field to order and de-duplicate on. On the push
+    feed and the native WebSocket it only ever rises, and the same
+    ``sequence`` twice is the same state. ``None`` where the state predates
+    the counter.
     """
 
-    _datetime_fields: ClassVar[tuple[str, ...]] = ("timestamp",)
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("timestamp", "accepted_at", "received_at")
 
     sets: list[int] | None = None
     games: list[list[int]] | None = None
@@ -188,6 +199,18 @@ class Score(Model):
     is_tiebreak: bool | None = None
     win_probability_p1: float | None = None
     danger: float | None = None
+    #: The same model read computed without the market-prior anchor (ULTRA,
+    #: since 2026-09-12). ``None`` where the model had nothing.
+    win_probability_p1_model: float | None = None
+    #: ``{"model_version", "generated_at", "market_anchored", "anchor_effective"}``
+    #: for the two probabilities on this state (ULTRA, since 2026-09-12).
+    win_probability_meta: dict[str, Any] | None = None
+    #: Per-match accept counter, from 1 — order and dedup on it (since 2026-09-26).
+    sequence: int | None = None
+    #: The instant we accepted this state, UTC (since 2026-09-15).
+    accepted_at: datetime | None = None
+    #: The instant this state arrived at our edge, UTC (since 2026-09-24).
+    received_at: datetime | None = None
     timestamp: datetime | None = None
 
     def games_for_set(self, set_index: int) -> tuple[int | None, int | None]:
@@ -1034,6 +1057,13 @@ class WSToken(Model):
     expires_in: int | None = None
     ws_url: str | None = None
     channels: dict[str, Any] | None = None
+    #: Echo of the ``model_fields`` switch this token was minted with (since
+    #: 2026-10-23): ``"off"`` means ``channels`` names the score-only streams
+    #: (``match:{match_id}:score_only`` / ``slate:score_only``), one
+    #: ``model: "off"`` frame per state with the model keys left out; ``"on"``
+    #: (the default) means the score channels, every state as ``pending`` then
+    #: ``ready``. ``None`` on a server that predates the switch.
+    model_fields: str | None = None
 
     @property
     def slate_channel(self) -> str | None:

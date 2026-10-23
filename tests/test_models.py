@@ -116,12 +116,28 @@ class TestScore:
         assert score.win_probability_p1 is None
         assert score.danger is None
 
+    def test_sequence_clocks_and_model_twin_are_typed(self):
+        score = Score.from_dict(
+            {
+                "sequence": 104,
+                "accepted_at": "2026-10-23T10:00:00.000Z",
+                "received_at": "2026-10-23T09:59:59.900Z",
+                "win_probability_p1": None,
+                "win_probability_p1_model": None,
+                "win_probability_meta": None,
+            }
+        )
+        assert score.sequence == 104
+        assert isinstance(score.accepted_at, datetime) and score.accepted_at.tzinfo is not None
+        assert isinstance(score.received_at, datetime)
+        assert score.win_probability_p1_model is None
+        assert score.win_probability_meta is None
+        assert Score.from_dict({}).sequence is None
+
 
 class TestMatch:
     def test_nested_players_become_models(self):
-        match = Match.from_dict(
-            {"id": 1, "players": {"p1": {"id": 10, "name": "A"}, "p2": {"id": 11, "name": "B"}}}
-        )
+        match = Match.from_dict({"id": 1, "players": {"p1": {"id": 10, "name": "A"}, "p2": {"id": 11, "name": "B"}}})
         assert isinstance(match.p1, Player)
         assert match.p1.name == "A"
         assert match.p2.name == "B"
@@ -148,9 +164,7 @@ class TestMatch:
 
 class TestMarket:
     def test_prices_become_models(self):
-        market = Market.from_dict(
-            {"id": 1, "prices": [{"side": 1, "mid": 0.62}, {"side": 2, "mid": 0.38}]}
-        )
+        market = Market.from_dict({"id": 1, "prices": [{"side": 1, "mid": 0.62}, {"side": 2, "mid": 0.38}]})
         assert len(market.prices) == 2
         assert market.prices[0].mid == 0.62
 
@@ -208,9 +222,7 @@ class TestMatchNewFields:
         assert match.tournament_id == "itf-m15-wuning"
 
     def test_round_code_and_withdrew(self):
-        match = Match.from_dict(
-            {"id": 1, "round_code": "R16", "event_status": "Retired", "winner": 2, "withdrew": 1}
-        )
+        match = Match.from_dict({"id": 1, "round_code": "R16", "event_status": "Retired", "winner": 2, "withdrew": 1})
         assert match.round_code == "R16"
         assert match.withdrew == 1
 
@@ -267,8 +279,16 @@ class TestMatchNewFields:
 class TestTournament:
     def test_fields(self):
         t = Tournament.from_dict(
-            {"id": "atp-wimbledon", "name": "Wimbledon", "tour": "atp", "surface": "grass",
-             "indoor": False, "city": "London", "country": "GB", "category": "grand_slam"}
+            {
+                "id": "atp-wimbledon",
+                "name": "Wimbledon",
+                "tour": "atp",
+                "surface": "grass",
+                "indoor": False,
+                "city": "London",
+                "country": "GB",
+                "category": "grand_slam",
+            }
         )
         assert t.id == "atp-wimbledon"
         assert t.category == "grand_slam"
@@ -283,10 +303,14 @@ class TestArchiveMatch:
     def test_winner_and_loser_become_participants(self):
         m = ArchiveMatch.from_dict(
             {
-                "id": 1, "tour": "atp", "event_date": "1980-06-23", "round": "F",
+                "id": 1,
+                "tour": "atp",
+                "event_date": "1980-06-23",
+                "round": "F",
                 "winner": {"name": "Bjorn Borg", "rank": 1, "player_id": 100437, "entry": None},
                 "loser": {"name": "John McEnroe", "rank": 2, "player_id": 100581, "seed": 2},
-                "score": "1-6 7-5 6-3 6-7(16) 8-6", "outcome": "completed",
+                "score": "1-6 7-5 6-3 6-7(16) 8-6",
+                "outcome": "completed",
             }
         )
         assert isinstance(m.winner, ArchiveParticipant)
@@ -303,8 +327,14 @@ class TestArchiveMatch:
 class TestArchivePlayerBio:
     def test_dates_are_parsed(self):
         bio = ArchivePlayerBio.from_dict(
-            {"id": 100437, "tour": "atp", "name": "Bjorn Borg", "dob": "1956-06-06",
-             "career_high_rank": 1, "career_high_date": "1977-08-23"}
+            {
+                "id": 100437,
+                "tour": "atp",
+                "name": "Bjorn Borg",
+                "dob": "1956-06-06",
+                "career_high_rank": 1,
+                "career_high_date": "1977-08-23",
+            }
         )
         assert isinstance(bio.dob, date)
         assert isinstance(bio.career_high_date, date)
@@ -344,8 +374,13 @@ class TestHistoryTape:
                     {"sets": [0, 0], "games": [[0], [0]], "timestamp": "2026-08-01T10:00:00Z"},
                     {"sets": [0, 0], "games": [[1], [0]], "point_winner": 1},
                 ],
-                "meta": {"match_id": 18953, "rows": 2, "coverage": "from_start",
-                         "point_source": "observed", "sequence": "clean"},
+                "meta": {
+                    "match_id": 18953,
+                    "rows": 2,
+                    "coverage": "from_start",
+                    "point_source": "observed",
+                    "sequence": "clean",
+                },
             }
         )
         assert isinstance(tape.match, Match)
@@ -359,16 +394,12 @@ class TestHistoryTape:
 
     def test_reconstructed_row_nulls_are_preserved(self):
         # Null timestamp is THE row-level marker of a reconstructed row.
-        row = TapeRow.from_dict(
-            {"sets": [1, 0], "timestamp": None, "win_probability_p1": None, "danger": None}
-        )
+        row = TapeRow.from_dict({"sets": [1, 0], "timestamp": None, "win_probability_p1": None, "danger": None})
         assert row.timestamp is None
         assert row.win_probability_p1 is None
 
     def test_per_set_tiebreaks(self):
-        tape = HistoryTape.from_dict(
-            {"tape": [], "tiebreaks": [None, {"p1": 7, "p2": 5}]}
-        )
+        tape = HistoryTape.from_dict({"tape": [], "tiebreaks": [None, {"p1": 7, "p2": 5}]})
         assert tape.tiebreaks[0] is None  # set 1 was not a breaker (or unobserved)
         assert tape.tiebreaks[1] == {"p1": 7, "p2": 5}
 
@@ -410,17 +441,24 @@ class TestMatchStatistics:
 class TestRankingRecord:
     def test_rank_systems_with_previous_rank(self):
         rec = RankingRecord.from_dict(
-            {"player_id": 925, "system": "atp", "rank": 3, "points": 6030,
-             "previous_rank": 4, "effective_date": "2026-08-03",
-             "observed_at": "2026-08-03T09:00:00Z"}
+            {
+                "player_id": 925,
+                "system": "atp",
+                "rank": 3,
+                "points": 6030,
+                "previous_rank": 4,
+                "effective_date": "2026-08-03",
+                "observed_at": "2026-08-03T09:00:00Z",
+            }
         )
         assert rec.previous_rank == 4
         assert isinstance(rec.effective_date, date)
         assert isinstance(rec.observed_at, datetime)
 
     def test_utr_is_a_rating_not_a_rank(self):
-        rec = RankingRecord.from_dict({"player_id": 925, "system": "utr", "rank": None,
-                                       "points": None, "rating": 15.83, "previous_rank": None})
+        rec = RankingRecord.from_dict(
+            {"player_id": 925, "system": "utr", "rank": None, "points": None, "rating": 15.83, "previous_rank": None}
+        )
         assert rec.rank is None
         assert rec.rating == 15.83
 
@@ -434,9 +472,19 @@ class TestRankingRecord:
 class TestLivePoints:
     def test_live_point_parses_every_field(self):
         p = LivePoint.from_dict(
-            {"seq": 41, "set": 2, "game": 5, "number": 3, "tiebreak": False,
-             "server": 1, "winner": 2, "score": {"p1": "30", "p2": "40"},
-             "sets": [1, 0], "games": [[6, 2], [4, 3]], "ts": "2026-08-17T10:15:03Z"}
+            {
+                "seq": 41,
+                "set": 2,
+                "game": 5,
+                "number": 3,
+                "tiebreak": False,
+                "server": 1,
+                "winner": 2,
+                "score": {"p1": "30", "p2": "40"},
+                "sets": [1, 0],
+                "games": [[6, 2], [4, 3]],
+                "ts": "2026-08-17T10:15:03Z",
+            }
         )
         assert p.seq == 41
         assert p.set == 2
@@ -452,10 +500,15 @@ class TestLivePoints:
 
     def test_points_page_parses_and_iterates(self):
         page = PointsPage.from_dict(
-            {"match_id": 18953, "pbp_coverage": "point", "quality": "clean",
-             "covers_from_start": True,
-             "points": [{"seq": 1, "winner": 1}, {"seq": 2, "winner": 2}],
-             "last_seq": 2, "has_more": True}
+            {
+                "match_id": 18953,
+                "pbp_coverage": "point",
+                "quality": "clean",
+                "covers_from_start": True,
+                "points": [{"seq": 1, "winner": 1}, {"seq": 2, "winner": 2}],
+                "last_seq": 2,
+                "has_more": True,
+            }
         )
         assert page.match_id == 18953
         assert page.covers_from_start is True
@@ -490,8 +543,16 @@ class TestRally:
                 "points": 413,
                 "points_parsed": 409,
                 "rally": [
-                    {"point": 1, "server": 1, "point_winner": 2, "raw": "4d;236b2f1*", "parsed": True,
-                     "rally_length": 3, "is_ace": False, "serve_direction": "wide"},
+                    {
+                        "point": 1,
+                        "server": 1,
+                        "point_winner": 2,
+                        "raw": "4d;236b2f1*",
+                        "parsed": True,
+                        "rally_length": 3,
+                        "is_ace": False,
+                        "serve_direction": "wide",
+                    },
                 ],
                 "meta": {"limit": 50, "offset": 0, "count": 1, "total": 413},
             }
@@ -518,17 +579,25 @@ class TestRally:
 class TestCharting:
     def test_player_aggregate(self):
         cp = ChartingPlayer.from_dict(
-            {"player": {"name": "Pete Sampras", "gender": "men"}, "matches_charted": 361,
-             "coverage": "curated", "families": {"serve_placement": {"deuce_wide": 1204}}}
+            {
+                "player": {"name": "Pete Sampras", "gender": "men"},
+                "matches_charted": 361,
+                "coverage": "curated",
+                "families": {"serve_placement": {"deuce_wide": 1204}},
+            }
         )
         assert cp.matches_charted == 361
         assert cp.families["serve_placement"]["deuce_wide"] == 1204
 
     def test_charted_match(self):
         cm = ChartingMatch.from_dict(
-            {"charting_match_id": 777, "mcp_id": "20080706-M-Wimbledon-F", "gender": "M",
-             "players": {"p1": "Roger Federer", "p2": "Rafael Nadal"},
-             "families": {"overview": {"1": {}, "2": {}, "Total": {}}}}
+            {
+                "charting_match_id": 777,
+                "mcp_id": "20080706-M-Wimbledon-F",
+                "gender": "M",
+                "players": {"p1": "Roger Federer", "p2": "Rafael Nadal"},
+                "families": {"overview": {"1": {}, "2": {}, "Total": {}}},
+            }
         )
         assert cm.charting_match_id == 777
         assert "Total" in cm.families["overview"]
@@ -537,9 +606,14 @@ class TestCharting:
 class TestHistoryPackage:
     def test_manifest(self):
         pkg = HistoryPackage.from_dict(
-            {"period": "2026-07", "status": "ready", "match_count": 4211, "row_count": 801532,
-             "files": [{"format": "jsonl", "filename": "2026-07.jsonl.gz", "bytes": 1024, "sha256": "ab"}],
-             "built_at": "2026-08-01T02:00:00Z"}
+            {
+                "period": "2026-07",
+                "status": "ready",
+                "match_count": 4211,
+                "row_count": 801532,
+                "files": [{"format": "jsonl", "filename": "2026-07.jsonl.gz", "bytes": 1024, "sha256": "ab"}],
+                "built_at": "2026-08-01T02:00:00Z",
+            }
         )
         assert pkg.period == "2026-07"
         assert pkg.kind is None  # absent on tape packages, so old parsers see no change
@@ -554,12 +628,26 @@ class TestHistoryPackage:
 class TestHistoryCoverage:
     def test_shape_and_as_of(self):
         cov = HistoryCoverage.from_dict(
-            {"as_of": "2026-08-18T04:15:00Z", "method": "ledger",
-             "buckets": {"atp_singles": {"completed": 9000, "any_tape": 8900,
-                                         "point_complete": 6200,
-                                         "complete_on_default_read": 6000, "share": 0.689}},
-             "totals": {"completed": 9000, "any_tape": 8900, "point_complete": 6200,
-                        "complete_on_default_read": 6000, "share": 0.689}}
+            {
+                "as_of": "2026-08-18T04:15:00Z",
+                "method": "ledger",
+                "buckets": {
+                    "atp_singles": {
+                        "completed": 9000,
+                        "any_tape": 8900,
+                        "point_complete": 6200,
+                        "complete_on_default_read": 6000,
+                        "share": 0.689,
+                    }
+                },
+                "totals": {
+                    "completed": 9000,
+                    "any_tape": 8900,
+                    "point_complete": 6200,
+                    "complete_on_default_read": 6000,
+                    "share": 0.689,
+                },
+            }
         )
         assert isinstance(cov.as_of, datetime)
         assert cov.method == "ledger"
@@ -570,9 +658,12 @@ class TestHistoryCoverage:
 class TestWSToken:
     def test_channels(self):
         tok = WSToken.from_dict(
-            {"token": "eyJ…", "expires_in": 300,
-             "ws_url": "wss://api.livetennisapi.com/connection/websocket",
-             "channels": {"match": "match:{id}", "slate": "slate:all"}}
+            {
+                "token": "eyJ…",
+                "expires_in": 300,
+                "ws_url": "wss://api.livetennisapi.com/connection/websocket",
+                "channels": {"match": "match:{id}", "slate": "slate:all"},
+            }
         )
         assert tok.slate_channel == "slate:all"
         assert tok.match_channel(18953) == "match:18953"
@@ -584,9 +675,15 @@ class TestWSToken:
 
     def test_point_channels_read_from_the_vocabulary(self):
         tok = WSToken.from_dict(
-            {"token": "t",
-             "channels": {"match": "match:{id}", "slate": "slate:all",
-                          "point_match": "point:match:{id}", "point_slate": "point:slate"}}
+            {
+                "token": "t",
+                "channels": {
+                    "match": "match:{id}",
+                    "slate": "slate:all",
+                    "point_match": "point:match:{id}",
+                    "point_slate": "point:slate",
+                },
+            }
         )
         assert tok.point_slate_channel == "point:slate"
         assert tok.point_match_channel(18953) == "point:match:18953"
@@ -594,18 +691,21 @@ class TestWSToken:
     def test_absent_point_vocabulary_is_an_honest_none(self):
         # A mint without the point family means this key will not receive
         # point frames — the helpers must refuse to guess a name.
-        tok = WSToken.from_dict(
-            {"token": "t", "channels": {"match": "match:{id}", "slate": "slate:all"}}
-        )
+        tok = WSToken.from_dict({"token": "t", "channels": {"match": "match:{id}", "slate": "slate:all"}})
         assert tok.point_slate_channel is None
         assert tok.point_match_channel(18953) is None
 
     def test_signal_channels_read_from_the_vocabulary(self):
         tok = WSToken.from_dict(
-            {"token": "t",
-             "channels": {"match": "match:{id}", "slate": "slate:all",
-                          "signal_match": "signal:match:{match_id}",
-                          "signal_slate": "signal:slate"}}
+            {
+                "token": "t",
+                "channels": {
+                    "match": "match:{id}",
+                    "slate": "slate:all",
+                    "signal_match": "signal:match:{match_id}",
+                    "signal_slate": "signal:slate",
+                },
+            }
         )
         assert tok.signal_slate_channel == "signal:slate"
         assert tok.signal_match_channel(18953) == "signal:match:18953"
@@ -613,9 +713,7 @@ class TestWSToken:
     def test_absent_signal_vocabulary_is_an_honest_none(self):
         # Same honest refusal as the point helpers: no advertised family,
         # no guessed name.
-        tok = WSToken.from_dict(
-            {"token": "t", "channels": {"match": "match:{id}", "slate": "slate:all"}}
-        )
+        tok = WSToken.from_dict({"token": "t", "channels": {"match": "match:{id}", "slate": "slate:all"}})
         assert tok.signal_slate_channel is None
         assert tok.signal_match_channel(18953) is None
 
@@ -623,11 +721,15 @@ class TestWSToken:
 class TestUsage:
     def test_shape(self):
         usage = Usage.from_dict(
-            {"tier": "free", "base_tier": "free", "channel": "direct",
-             "limits": {"per_minute": 30, "per_day": 100},
-             "today": {"calls": 41, "errors": 0, "remaining_day": 59},
-             "history": [{"day": "2026-08-06", "calls": 100, "errors": 2}],
-             "as_of": "2026-08-07T10:00:00Z"}
+            {
+                "tier": "free",
+                "base_tier": "free",
+                "channel": "direct",
+                "limits": {"per_minute": 30, "per_day": 100},
+                "today": {"calls": 41, "errors": 0, "remaining_day": 59},
+                "history": [{"day": "2026-08-06", "calls": 100, "errors": 2}],
+                "as_of": "2026-08-07T10:00:00Z",
+            }
         )
         assert usage.limits["per_day"] == 100
         assert usage.today["remaining_day"] == 59

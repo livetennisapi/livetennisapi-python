@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] — 2026-10-23
+
+### Added
+- **Score first.** Every push and WebSocket `score` frame now carries `model`
+  beside `score` (API 2026-10-23): `"pending"` the instant a state is accepted
+  (the four model keys present and `None`), `"ready"` once its model run
+  finished, or `"off"` on the score-only channels. On the push feed a state
+  leaves twice, pending then ready, with the same `score.sequence`, so dedup
+  on `(match_id, score.sequence, model)` and apply each frame to the
+  `sequence` it names. A frame with no `model` is `ready`. `ScoreUpdate` gains
+  `model`, `model_state` (the missing-means-ready rule applied) and
+  `dedup_key`.
+- **`model_fields=False`** on `PushStream` (mints with `?model_fields=off`
+  and subscribes the score-only channels the mint names) and on
+  `LiveScoreStream` (sends `"model_fields": false` on subscribe). Each state
+  is then one `model: "off"` frame with the model keys left out.
+- `get_ws_token(model_fields="off")` on both clients, and the
+  `WSToken.model_fields` echo.
+- `Score` declares `sequence`, `accepted_at`, `received_at`,
+  `win_probability_p1_model` and `win_probability_meta`, which the score
+  object has carried for a while and the dataclass did not name. The two
+  clocks parse as `datetime`.
+
+### Changed
+- README: the push-feed section said nothing about a counter on score
+  frames and set them against points as the only `seq`-keyed frames. Score
+  frames carry `score.sequence` since 2026-09-26; the text now says so.
+
 ## [1.9.0] — 2026-10-22
 
 ### Added

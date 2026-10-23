@@ -13,6 +13,14 @@ frames carry the same ULTRA model fields as REST — ``win_probability_p1`` and
 ``danger`` ride along on every frame (null means the model had no output for
 that state, not that the field is missing).
 
+Since 2026-10-23 every ``score`` frame also carries ``model`` beside
+``score``. This socket sends a state once, with the model fields on it, so
+the value is ``"ready"`` (a frame with no ``model`` at all means the same —
+:attr:`ScoreUpdate.model_state` applies that rule). Pass
+``model_fields=False`` to add ``"model_fields": false`` to the subscribe
+message: every frame then leaves the four model keys out and says
+``model: "off"``. Dedup on ``(match_id, score.sequence, model)``.
+
 Topics
 ------
 ``live-scores``   every live match
@@ -66,7 +74,15 @@ from .errors import (
 )
 from .models import LivePoint, Model, Score
 
-__all__ = ["BreakPoint", "BreakPointResult", "LiveScoreStream", "PointUpdate", "ScoreUpdate", "StreamFrame"]
+__all__ = [
+    "MODEL_STATES",
+    "BreakPoint",
+    "BreakPointResult",
+    "LiveScoreStream",
+    "PointUpdate",
+    "ScoreUpdate",
+    "StreamFrame",
+]
 
 #: The server's subscribe timeout. Subscribing later than this drops the socket.
 _SUBSCRIBE_TIMEOUT_S = 15.0
@@ -85,6 +101,10 @@ _FATAL = {
 }
 
 
+#: The three values of a score frame's ``model`` field (since 2026-10-23).
+MODEL_STATES: tuple[str, ...] = ("pending", "ready", "off")
+
+
 @dataclass
 class ScoreUpdate(Model):
     """One ``score`` frame.
@@ -93,10 +113,41 @@ class ScoreUpdate(Model):
     model fields included: ``win_probability_p1`` and ``danger`` arrive on the
     WebSocket frames too (ULTRA). A null model field means the model had no
     output for that state — never that the feed withholds them.
+
+    ``model`` (since 2026-10-23) says which frame of the state this is:
+    ``"pending"`` — the state the instant it was accepted, the four model keys
+    present and ``None``; ``"ready"`` — the same state once its model run
+    finished, values in; ``"off"`` — the score-only channels, one frame per
+    state, model keys left out. On the push feed a state leaves twice,
+    pending then ready, with the same ``score.sequence``; the native socket
+    sends it once, as ready. Dedup on ``(match_id, score.sequence, model)``,
+    apply each frame to the ``sequence`` it names, and take the model values
+    from the ``ready`` frame of that sequence — a ``ready`` frame can arrive
+    after the ``pending`` frame of a later sequence. A frame with no ``model``
+    at all is ``ready``; read :attr:`model_state` for that rule applied.
     """
 
     match_id: int | None = None
+    #: ``"pending"`` | ``"ready"`` | ``"off"``, or ``None`` on an older server.
+    model: str | None = None
     score: Score | None = None
+
+    @property
+    def model_state(self) -> str:
+        """``model`` with the documented default: a missing value is ``"ready"``.
+
+        A frame without ``model`` is the single frame of the previous
+        behaviour, with the model fields on it. An unknown value is read as
+        ``"ready"`` too, so a vocabulary newer than this SDK never turns
+        model values into pending ones.
+        """
+        return self.model if self.model in ("pending", "off") else "ready"
+
+    @property
+    def dedup_key(self) -> tuple[int | None, int | None, str]:
+        """``(match_id, score.sequence, model_state)`` — the documented dedup key."""
+        sequence = self.score.sequence if self.score is not None else None
+        return (self.match_id, sequence, self.model_state)
 
     @classmethod
     def from_dict(cls, data: Any) -> ScoreUpdate | None:
@@ -205,6 +256,7 @@ class LiveScoreStream(_BaseClient):
         *,
         topics: Sequence[str] = ("live-scores",),
         signals: Sequence[str] = (),
+        model_fields: bool = True,
         auto_reconnect: bool = True,
         max_reconnect_attempts: int = 0,
         **kwargs: Any,
@@ -214,6 +266,11 @@ class LiveScoreStream(_BaseClient):
         #: Opt-in signals to receive on top of score frames, e.g. ``break_point``.
         #: Empty (the default) means score frames only — identical to before.
         self.signals = [s for s in signals if s]
+        #: ``False`` asks for score-only frames: the subscribe message carries
+        #: ``"model_fields": false`` and every ``score`` frame leaves the four
+        #: model keys out and says ``model: "off"``. ``True`` (the default)
+        #: keeps the model fields on every frame, ``model: "ready"``.
+        self.model_fields = bool(model_fields)
         self.auto_reconnect = auto_reconnect
         #: 0 means retry forever.
         self.max_reconnect_attempts = max(0, int(max_reconnect_attempts))
@@ -289,6 +346,9 @@ class LiveScoreStream(_BaseClient):
             subscribe: dict[str, Any] = {"action": "subscribe", "topics": self.topics}
             if self.signals:
                 subscribe["signals"] = self.signals
+            if not self.model_fields:
+                # Sent only when switched off, so the default frame is unchanged.
+                subscribe["model_fields"] = False
             ws.send(json.dumps(subscribe))
 
             deadline = time.monotonic() + _SUBSCRIBE_TIMEOUT_S

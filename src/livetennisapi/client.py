@@ -711,7 +711,7 @@ class LiveTennisAPI(_BaseClient):
         """One charted match, every stat family for both players. **ULTRA.**"""
         return ChartingMatch.from_dict(self._request(f"/charting/matches/{charting_match_id}"))
 
-    def get_ws_token(self) -> WSToken | None:
+    def get_ws_token(self, *, model_fields: str | None = None) -> WSToken | None:
         """Mint a connection token for the high-fan-out push feed. **ULTRA.**
 
         Returns the push WebSocket URL plus the channel vocabulary —
@@ -721,8 +721,17 @@ class LiveTennisAPI(_BaseClient):
         on the push feed carry the same ULTRA model fields as REST
         (``win_probability_p1``, ``danger``). The token is short-lived — mint
         a fresh one on reconnect.
+
+        Since 2026-10-23 every state leaves the score channels twice — a
+        ``model: "pending"`` frame the instant it is accepted (model keys
+        ``None``) and a ``model: "ready"`` frame once the model run finished.
+        Dedup on ``(match_id, score.sequence, model)``. If you do not use the
+        model fields, pass ``model_fields="off"``: ``channels`` then names the
+        score-only pair (``match:{match_id}:score_only`` / ``slate:score_only``),
+        one ``model: "off"`` frame per state with the model keys left out, and
+        :attr:`~livetennisapi.WSToken.model_fields` echoes ``"off"``.
         """
-        return WSToken.from_dict(self._request("/ws-token"))
+        return WSToken.from_dict(self._request("/ws-token", self._params({"model_fields": model_fields})))
 
     def get_usage(self) -> Usage | None:
         """Your own usage vs quota. Any tier, and the read itself is quota-exempt.
@@ -1138,8 +1147,14 @@ class AsyncLiveTennisAPI(_BaseClient):
     async def get_charting_match(self, charting_match_id: int) -> ChartingMatch | None:
         return ChartingMatch.from_dict(await self._request(f"/charting/matches/{charting_match_id}"))
 
-    async def get_ws_token(self) -> WSToken | None:
-        return WSToken.from_dict(await self._request("/ws-token"))
+    async def get_ws_token(self, *, model_fields: str | None = None) -> WSToken | None:
+        """Mint a connection token for the push feed. **ULTRA.**
+
+        ``model_fields="off"`` asks for the score-only channels (one
+        ``model: "off"`` frame per state, model keys left out); see the sync
+        client's :meth:`~livetennisapi.LiveTennisAPI.get_ws_token`.
+        """
+        return WSToken.from_dict(await self._request("/ws-token", self._params({"model_fields": model_fields})))
 
     async def get_usage(self) -> Usage | None:
         return Usage.from_dict(await self._request("/usage"))

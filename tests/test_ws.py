@@ -280,3 +280,99 @@ def test_stream_frame_union_is_exported():
 def test_ws_module_all_lists_new_symbols():
     for name in ("BreakPoint", "BreakPointResult", "PointUpdate", "StreamFrame"):
         assert name in ws_module.__all__
+
+
+class TestScoreFirst:
+    """Since 2026-10-23 a score frame carries ``model`` beside ``score``: the
+    push feed sends a state as ``pending`` (model keys null) then ``ready``;
+    the native socket sends it once, as ``ready``; a frame with no ``model``
+    at all is ``ready``. Nothing here reshapes the frame."""
+
+    PENDING = {
+        "type": "score",
+        "match_id": 18953,
+        "model": "pending",
+        "score": {
+            "sets": [1, 0],
+            "games": [[6, 3], [4, 2]],
+            "sequence": 104,
+            "accepted_at": "2026-10-23T10:00:00.000Z",
+            "win_probability_p1": None,
+            "danger": None,
+            "win_probability_p1_model": None,
+            "win_probability_meta": None,
+        },
+    }
+    READY = {
+        **PENDING,
+        "model": "ready",
+        "score": {
+            **PENDING["score"],
+            "win_probability_p1": 0.62,
+            "danger": 0.18,
+            "win_probability_p1_model": 0.6,
+            "win_probability_meta": {"model_version": "markov-population-2026-08-23", "anchor_effective": True},
+        },
+    }
+    LEGACY = {
+        "type": "score",
+        "match_id": 18953,
+        "score": {"sets": [1, 0], "sequence": 105, "win_probability_p1": 0.63},
+    }
+
+    def test_pending_frame_keeps_the_null_model_keys(self):
+        update = ScoreUpdate.from_dict(self.PENDING)
+        assert update.model == "pending"
+        assert update.model_state == "pending"
+        assert update.score.sequence == 104
+        assert isinstance(update.score.accepted_at, datetime)
+        # Present and None — not absent.
+        assert "win_probability_p1" in update.score.raw
+        assert update.score.win_probability_p1 is None
+        assert update.score.win_probability_p1_model is None
+        assert update.score.win_probability_meta is None
+        assert update.raw == self.PENDING
+
+    def test_ready_frame_carries_the_values(self):
+        update = ScoreUpdate.from_dict(self.READY)
+        assert update.model_state == "ready"
+        assert update.score.win_probability_p1 == 0.62
+        assert update.score.win_probability_p1_model == 0.6
+        assert update.score.win_probability_meta["anchor_effective"] is True
+
+    def test_frame_without_model_is_ready(self):
+        update = ScoreUpdate.from_dict(self.LEGACY)
+        assert update.model is None
+        assert update.model_state == "ready"
+
+    def test_unknown_model_value_reads_as_ready(self):
+        update = ScoreUpdate.from_dict({**self.LEGACY, "model": "something-new"})
+        assert update.model == "something-new"
+        assert update.model_state == "ready"
+
+    def test_off_frame_has_no_model_keys(self):
+        update = ScoreUpdate.from_dict(
+            {"type": "score", "match_id": 7, "model": "off", "score": {"sets": [0, 0], "sequence": 1}}
+        )
+        assert update.model_state == "off"
+        assert "win_probability_p1" not in update.score.raw
+        assert update.score.win_probability_p1 is None
+
+    def test_dedup_key_is_match_sequence_model(self, monkeypatch):
+        yielded, _ = run_stream(monkeypatch, frames=[self.PENDING, self.READY, self.LEGACY])
+        keys = [u.dedup_key for u in yielded]
+        assert keys == [(18953, 104, "pending"), (18953, 104, "ready"), (18953, 105, "ready")]
+        assert len(set(keys)) == 3
+
+    def test_model_fields_false_is_sent_on_subscribe(self, monkeypatch):
+        fake = FakeWS({"type": "subscribed", "topics": ["live-scores"]}, [])
+        import websockets.sync.client as sync_client
+
+        monkeypatch.setattr(sync_client, "connect", lambda *a, **k: fake)
+        stream = LiveScoreStream(api_key="twjp_test", model_fields=False, auto_reconnect=False)
+        list(stream)
+        assert json.loads(fake.sent[0]) == {"action": "subscribe", "topics": ["live-scores"], "model_fields": False}
+
+    def test_default_subscribe_carries_no_model_fields_key(self, monkeypatch):
+        _, subscribe = run_stream(monkeypatch)
+        assert "model_fields" not in subscribe

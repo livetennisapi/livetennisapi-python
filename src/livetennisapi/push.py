@@ -51,11 +51,31 @@ events emitted when they occur, with no replay: a stream that connects
 mid-break-point does not receive the onset. With no ``signals`` the stream
 behaves exactly as before.
 
+Score first (since 2026-10-23)
+------------------------------
+Every accepted state leaves the score channels twice, and every ``score``
+frame carries ``model`` beside ``score``: ``"pending"`` the instant the state
+is accepted (the four model keys — ``win_probability_p1``, ``danger``,
+``win_probability_p1_model``, ``win_probability_meta`` — present and
+``None``) and ``"ready"`` once its model run finished (262 ms median, p90
+790 ms later), or once as ``"ready"`` when the model finished first. Both
+frames carry the same ``score.sequence``, so dedup on
+``(match_id, score.sequence, model)`` — :attr:`~livetennisapi.ScoreUpdate.dedup_key`
+— apply each frame to the ``sequence`` it names, and take the model values
+from the ``ready`` frame of that sequence: a ``ready`` frame can arrive after
+the ``pending`` frame of a later sequence. A frame with no ``model`` is
+``ready`` (:attr:`~livetennisapi.ScoreUpdate.model_state`). If you do not
+use the model fields, pass ``model_fields=False``: the token is minted with
+``?model_fields=off``, the mint names the score-only channels and each state
+is one ``model: "off"`` frame with the model keys left out.
+
 Delivery model
 --------------
 Score frames are complete-state and best-effort with no replay: a missed
-score frame self-corrects on the next one, so there is no client-side
-catch-up to do for scores. Point frames are EVENTS, one per committed point,
+score frame self-corrects on the next one (and each carries
+``score.sequence``, our per-match accept counter, so you can tell a repeat
+from a new state), so there is no client-side catch-up to do for scores.
+Point frames are EVENTS, one per committed point,
 carrying the per-match monotonic gapless ``seq`` — so for points the stream
 does run a catch-up (``points_resume``, on by default): per-match last-seq
 cursors, a REST read of everything missed on every reconnect (yielded before
@@ -216,6 +236,7 @@ class PushStream(_BaseClient):
         points: bool = False,
         points_resume: bool = True,
         signals: Sequence[str] = (),
+        model_fields: bool = True,
         on_gap: Callable[[int, int, int], None] | None = None,
         auto_reconnect: bool = True,
         max_reconnect_attempts: int = 0,
@@ -225,6 +246,16 @@ class PushStream(_BaseClient):
         # the internal client that mints tokens.
         self._transport = kwargs.pop("transport", None)
         super().__init__(api_key, **kwargs)
+        #: ``False`` asks for score-only frames: the token is minted with
+        #: ``?model_fields=off``, so the mint's ``channels`` names the
+        #: score-only pair (``match:{match_id}:score_only`` /
+        #: ``slate:score_only``) and the stream subscribes those. Each state is
+        #: then ONE frame, ``model: "off"``, with the four model keys left out
+        #: — nothing waits on the model and there is no second frame. ``True``
+        #: (the default): the score channels, every state as ``pending`` then
+        #: ``ready``. Honoured only while the feature is on server-side; the
+        #: mint echoes the switch it applied in ``WSToken.model_fields``.
+        self.model_fields = bool(model_fields)
         #: Specific matches to follow. Empty (the default) means the slate —
         #: every live match.
         self.match_ids = [int(m) for m in match_ids]
@@ -349,13 +380,17 @@ class PushStream(_BaseClient):
         """Mint a fresh connection token via ``GET /ws-token``.
 
         Called before EVERY connection attempt — tokens expire with the
-        connection and are never reused across reconnects. Auth/tier refusals
+        connection and are never reused across reconnects. With
+        ``model_fields=False`` the mint carries ``?model_fields=off``, so the
+        vocabulary it returns names the score-only channels and
+        :meth:`_channel_names` subscribes those without knowing their names.
+        Auth/tier refusals
         surface as the SDK's normal REST exceptions: an ULTRA gate raises
         :class:`~livetennisapi.UpgradeRequired` naming the tier, an unknown
         key :class:`~livetennisapi.Unauthorized`, a feed that is not
         configured :class:`~livetennisapi.ServiceUnavailable`.
         """
-        token = self._rest_client().get_ws_token()
+        token = self._rest_client().get_ws_token(model_fields=None if self.model_fields else "off")
         if token is None or not token.token or not token.ws_url:
             # A 200 that carries no usable token is a server-side fault a
             # reconnect loop cannot fix — typed so listen() raises it rather

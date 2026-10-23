@@ -97,7 +97,9 @@ with PushStream(match_ids=[18953]) as stream:   # one specific match
 model fields and all — so switching streamers changes nothing downstream.
 Score frames are complete-state and best-effort with no replay: a missed
 score frame self-corrects on the next one, so there is no catch-up to run for
-scores. Auth and tier refusals surface from the token mint as the SDK's
+scores. Each one carries `score.sequence`, our per-match accept counter
+(since 2026-09-26), so a repeat and a new state are told apart by one
+integer. Auth and tier refusals surface from the token mint as the SDK's
 normal exceptions (`UpgradeRequired` naming ULTRA, and so on) and are never
 retried — and neither are deterministic connect/subscribe refusals: an
 unknown or unpermitted channel raises `PushRefused` or `Unauthorized` instead
@@ -106,11 +108,56 @@ quota). Reads are bounded by the server's advertised heartbeat cadence, so a
 silently dead connection is detected and reconnected rather than hanging the
 stream forever.
 
+#### Score first: two frames per state (since 2026-10-23)
+
+The model fields on a score (`win_probability_p1`, `danger`,
+`win_probability_p1_model`, `win_probability_meta`) come from a model run that
+starts after we accept the state — 262 ms at the median, 790 ms at p90. The
+push feed no longer waits for it. Each accepted state leaves twice, and every
+`ScoreUpdate` carries `model` beside `score`: `"pending"` the instant the state
+is accepted (the four model keys present and `None`), then `"ready"` once the
+model run finished (the values). When the model finishes first the state goes
+out once, as `"ready"`. Both frames carry the same `score.sequence`, so:
+
+- **Dedup on `(match_id, score.sequence, model)`** — that tuple is
+  `update.dedup_key`. For one `sequence` the `pending` frame always precedes
+  the `ready` frame, and each appears at most once.
+- **Apply a frame to the `sequence` it names.** A `ready` frame can arrive
+  after the `pending` frame of a *later* `sequence` when two states were
+  accepted inside one model run; take the model values from the `ready` frame
+  of that sequence.
+- **A frame with no `model` at all is `ready`** — an older server, the feature
+  switched off on our side. `update.model_state` applies that rule.
+
+```python
+seen = set()
+with PushStream() as stream:
+    for update in stream:
+        if not isinstance(update, ScoreUpdate) or update.dedup_key in seen:
+            continue
+        seen.add(update.dedup_key)
+        if update.model_state == "ready":
+            print(update.match_id, update.score.sequence, update.score.win_probability_p1)
+```
+
+**If you do not use the model fields**, pass `model_fields=False`. The token is
+minted with `?model_fields=off`, the mint names the score-only channels
+(`match:{match_id}:score_only` / `slate:score_only`) and the stream subscribes
+those: each state is one frame, `model: "off"`, with the four model keys left
+out — nothing waits on the model and there is no second frame.
+
+```python
+with PushStream(model_fields=False) as stream:
+    ...
+```
+
 **Point frames** ride the push feed too — `points=True` subscribes the point
 channels (`point:slate`, or `point:match:<id>` per entry of `match_ids`) and
 yields the same `PointUpdate` objects as the native feed's `points` signal.
-Because point frames are events keyed by the gapless per-match `seq` (not
-self-correcting state), the push side runs a resume for them —
+Because point frames are events keyed by the gapless per-match `seq` (a
+score frame's `score.sequence` counts accepted states; a point's `seq`
+counts points, and a missed point does not come back on the next frame), the
+push side runs a resume for them —
 `points_resume=True`, the default: per-match last-`seq` cursors, a REST
 catch-up of everything missed on every reconnect (fetched points are yielded
 **before** live frames), `seq`-dedup of the overlap, and a synchronous
@@ -164,6 +211,10 @@ tok.point_match_channel(18953)   # "point:match:18953", or None when not adverti
 tok.point_slate_channel          # "point:slate", or None when not advertised
 tok.signal_match_channel(18953)  # "signal:match:18953", or None when not advertised
 tok.signal_slate_channel         # "signal:slate", or None when not advertised
+
+off = client.get_ws_token(model_fields="off")   # score-only channels
+off.slate_channel                # "slate:score_only"
+off.model_fields                 # "off" — the mint echoes the switch it applied
 ```
 
 Mint a fresh token on reconnect — tokens expire with the connection. The
@@ -187,6 +238,12 @@ reconnect on a bad key or an insufficient tier — those raise immediately rathe
 than retry forever. One thing to know before leaning on it: every native
 connection pins shared server capacity (a concurrent-connection ceiling per
 key and per server), so for anything always-on, use `PushStream`.
+
+Since 2026-10-23 its `score` frames carry the push feed's `model` field too.
+This socket sends a state once, with the model fields on it, so the value is
+`"ready"`. Pass `model_fields=False` to add `"model_fields": false` to the
+subscribe message: every frame then leaves the four model keys out and says
+`model: "off"`.
 
 ### Break-point signals
 
@@ -241,7 +298,11 @@ the resume machinery the push side adds.
 
 Score frames carry the same ULTRA model fields as REST — `update.score.win_probability_p1`
 and `update.score.danger` are on every frame. A `None` means the model had no
-output for that state, never that the feed withholds them.
+output for that state, never that the feed withholds them — except on a
+push-feed frame whose `model` is `"pending"`, where all four model keys are
+`None` because the model run for that state has not finished yet; the `"ready"`
+frame of the same `score.sequence` carries the values (see "Score first"
+above).
 
 ## Endpoints and tiers
 

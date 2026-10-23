@@ -89,26 +89,20 @@ class TestErrorMapping:
             client.get_match(1)
 
     def test_upgrade_required_names_the_tier_for_analysis(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.get_match_analysis(1)
         assert exc.value.required_tier == "ULTRA"
         assert "ULTRA" in str(exc.value)
 
     def test_upgrade_required_names_pro_for_events(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_match_events(1)
         assert exc.value.required_tier == "PRO"
 
     def test_upgrade_required_names_pro_for_markets(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_markets(1)
         assert exc.value.required_tier == "PRO"
@@ -116,25 +110,19 @@ class TestErrorMapping:
     def test_upgrade_required_names_basic_for_history(self):
         """FREE stops short of /history/matches, so a free key hitting it must be
         told BASIC rather than left with the API's bare ``upgrade_required``."""
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_completed_matches()
         assert exc.value.required_tier == "BASIC"
 
     def test_upgrade_required_names_basic_for_the_results_archive(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_archive_matches(name="borg")
         assert exc.value.required_tier == "BASIC"
 
     def test_upgrade_required_names_basic_for_h2h(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.get_h2h("federer", "nadal")
         assert exc.value.required_tier == "BASIC"
@@ -156,9 +144,7 @@ class TestErrorMapping:
         assert "Venus Williams" in exc.value.body["candidates"]
 
     def test_upgrade_required_names_ultra_for_statistics(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.get_match_statistics(1)
         assert exc.value.required_tier == "ULTRA"
@@ -173,9 +159,7 @@ class TestErrorMapping:
             lambda c: c.get_ws_token(),
             lambda c: c.get_match_points(1),
         ):
-            client = client_returning(
-                httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-            )
+            client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
             with pytest.raises(UpgradeRequired) as exc:
                 call(client)
             assert exc.value.required_tier == "ULTRA"
@@ -183,57 +167,43 @@ class TestErrorMapping:
     def test_rankings_listing_names_pro_but_per_player_names_ultra(self):
         """/rankings gates on its parameters: listing (no player) is PRO, the
         per-player as-of mode is ULTRA — the 403 must name the right one."""
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_rankings(system="atp")
         assert exc.value.required_tier == "PRO"
 
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_rankings(player=[925, 1137])
         assert exc.value.required_tier == "ULTRA"
 
     def test_packages_name_pro_but_non_tape_kinds_and_year_name_ultra(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_history_packages()
         assert exc.value.required_tier == "PRO"
 
         for kwargs in ({"kind": "rankings"}, {"kind": "rally"}, {"year": "2025"}):
-            client = client_returning(
-                httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-            )
+            client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
             with pytest.raises(UpgradeRequired) as exc:
                 client.list_history_packages(**kwargs)
             assert exc.value.required_tier == "ULTRA", kwargs
 
     def test_completed_matches_listing_names_basic(self):
         """`/matches?status=completed` is gated even though /matches is FREE."""
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_matches(status="completed")
         assert exc.value.required_tier == "BASIC"
 
     def test_live_matches_403_names_no_tier(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.list_matches(status="live")
         assert exc.value.required_tier is None
 
     def test_tape_names_basic(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.get_match_tape(18953)
         assert exc.value.required_tier == "BASIC"
@@ -313,9 +283,7 @@ class TestErrorMapping:
         assert "fix the retry loop" in str(exc.value)
 
     def test_error_code_is_exposed(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.get_match(1)
         assert exc.value.error_code == "upgrade_required"
@@ -605,14 +573,29 @@ class TestRequests:
     def test_ws_token_and_usage_paths(self):
         client = client_returning(httpx.Response(200, json={}))
         client.get_ws_token()
-        assert str(client.requests[0].url).startswith(f"{BASE}/ws-token")
+        assert str(client.requests[0].url) == f"{BASE}/ws-token"
         client.get_usage()
         assert str(client.requests[1].url).startswith(f"{BASE}/usage")
 
-    def test_not_charted_is_a_distinguishable_404(self):
+    def test_ws_token_model_fields_off_reaches_the_wire_and_echoes(self):
         client = client_returning(
-            httpx.Response(404, json={"error": "not_charted"}), max_retries=0
+            httpx.Response(
+                200,
+                json={
+                    "token": "jwt",
+                    "ws_url": "wss://x/connection/websocket",
+                    "channels": {"match": "match:{match_id}:score_only", "slate": "slate:score_only"},
+                    "model_fields": "off",
+                },
+            )
         )
+        token = client.get_ws_token(model_fields="off")
+        assert str(client.requests[0].url) == f"{BASE}/ws-token?model_fields=off"
+        assert token.model_fields == "off"
+        assert token.slate_channel == "slate:score_only"
+
+    def test_not_charted_is_a_distinguishable_404(self):
+        client = client_returning(httpx.Response(404, json={"error": "not_charted"}), max_retries=0)
         with pytest.raises(NotFound) as exc:
             client.get_match_rally(18953)
         assert exc.value.error_code == "not_charted"
@@ -691,9 +674,18 @@ class TestMatchPoints:
             "pbp_coverage": "point",
             "quality": "clean",
             "points": [
-                {"seq": s, "set": 1, "game": 1, "number": s, "server": 1,
-                 "winner": 1 + (s % 2), "score": {"p1": "15", "p2": "0"},
-                 "sets": [0, 0], "games": [[0], [0]], "ts": "2026-08-17T10:00:00Z"}
+                {
+                    "seq": s,
+                    "set": 1,
+                    "game": 1,
+                    "number": s,
+                    "server": 1,
+                    "winner": 1 + (s % 2),
+                    "score": {"p1": "15", "p2": "0"},
+                    "sets": [0, 0],
+                    "games": [[0], [0]],
+                    "ts": "2026-08-17T10:00:00Z",
+                }
                 for s in seqs
             ],
             "last_seq": last_seq if last_seq is not None else (seqs[-1] if seqs else None),
@@ -814,17 +806,13 @@ class TestHistoryCoverage:
         assert cov.totals["complete_on_default_read"] == 440
 
     def test_403_names_basic(self):
-        client = client_returning(
-            httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(403, json={"error": "upgrade_required"}), max_retries=0)
         with pytest.raises(UpgradeRequired) as exc:
             client.get_history_coverage()
         assert exc.value.required_tier == "BASIC"
 
     def test_unbuilt_artifact_is_a_503_with_the_code_readable(self):
-        client = client_returning(
-            httpx.Response(503, json={"error": "coverage_unavailable"}), max_retries=0
-        )
+        client = client_returning(httpx.Response(503, json={"error": "coverage_unavailable"}), max_retries=0)
         with pytest.raises(ServiceUnavailable) as exc:
             client.get_history_coverage()
         assert exc.value.error_code == "coverage_unavailable"
@@ -975,20 +963,42 @@ class TestParity:
     def test_both_clients_expose_the_same_endpoints(self):
         """A method added to one client must be added to the other."""
         endpoints = {
-            "health", "list_matches", "get_match", "get_match_score",
-            "list_match_events", "get_match_analysis", "search_players",
-            "get_player", "player_stats", "list_markets", "get_market_prices",
-            "list_completed_matches", "list_fixtures", "paginate",
-            "list_tournaments", "get_tournament",
-            "list_archive_matches", "get_archive_match",
-            "list_archive_players", "get_archive_career", "get_h2h",
-            "get_match_tape", "get_match_statistics", "list_rankings",
+            "health",
+            "list_matches",
+            "get_match",
+            "get_match_score",
+            "list_match_events",
+            "get_match_analysis",
+            "search_players",
+            "get_player",
+            "player_stats",
+            "list_markets",
+            "get_market_prices",
+            "list_completed_matches",
+            "list_fixtures",
+            "paginate",
+            "list_tournaments",
+            "get_tournament",
+            "list_archive_matches",
+            "get_archive_match",
+            "list_archive_players",
+            "get_archive_career",
+            "get_h2h",
+            "get_match_tape",
+            "get_match_statistics",
+            "list_rankings",
             "get_history_coverage",
-            "get_match_points", "iter_match_points",
-            "list_history_packages", "get_history_package",
-            "list_rally_matches", "get_rally_match", "get_match_rally",
-            "get_charting_player", "get_charting_match",
-            "get_ws_token", "get_usage",
+            "get_match_points",
+            "iter_match_points",
+            "list_history_packages",
+            "get_history_package",
+            "list_rally_matches",
+            "get_rally_match",
+            "get_match_rally",
+            "get_charting_player",
+            "get_charting_match",
+            "get_ws_token",
+            "get_usage",
         }
         for name in endpoints:
             assert hasattr(LiveTennisAPI, name), f"sync client missing {name}"

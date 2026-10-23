@@ -1139,3 +1139,97 @@ def test_push_symbols_are_exported():
 def test_push_module_all_lists_public_symbols():
     for name in ("PushStream", "PushFrame", "PushStreamFrame"):
         assert name in push_module.__all__
+
+
+class TestScoreFirst:
+    """The push feed's two frames per state, and the ``model_fields=False``
+    opt-out that mints with ``?model_fields=off`` and follows the score-only
+    vocabulary the mint names."""
+
+    PENDING = pub(
+        "slate:all",
+        {
+            "type": "score",
+            "match_id": 18953,
+            "model": "pending",
+            "score": {
+                "sets": [1, 0],
+                "sequence": 104,
+                "win_probability_p1": None,
+                "danger": None,
+                "win_probability_p1_model": None,
+                "win_probability_meta": None,
+            },
+        },
+    )
+    READY = pub(
+        "slate:all",
+        {
+            "type": "score",
+            "match_id": 18953,
+            "model": "ready",
+            "score": {"sets": [1, 0], "sequence": 104, "win_probability_p1": 0.62, "danger": 0.18},
+        },
+    )
+    LEGACY = pub("slate:all", {"type": "score", "match_id": 18953, "score": {"sets": [1, 0], "sequence": 105}})
+
+    #: A mint that honoured ``?model_fields=off``: the vocabulary names the
+    #: score-only pair and echoes the switch.
+    OFF_TOKEN_BODY = {
+        **TOKEN_BODY,
+        "channels": {"match": "match:{match_id}:score_only", "slate": "slate:score_only"},
+        "model_fields": "off",
+    }
+
+    def test_pending_then_ready_then_legacy_dedup_on_match_sequence_model(self, monkeypatch):
+        yielded, _, _ = run_push(
+            monkeypatch, messages=[json.dumps(self.PENDING), json.dumps(self.READY), json.dumps(self.LEGACY)]
+        )
+        assert all(isinstance(u, ScoreUpdate) for u in yielded)
+        assert [u.model_state for u in yielded] == ["pending", "ready", "ready"]
+        assert [u.dedup_key for u in yielded] == [(18953, 104, "pending"), (18953, 104, "ready"), (18953, 105, "ready")]
+        assert yielded[0].score.win_probability_p1 is None
+        assert "win_probability_p1" in yielded[0].score.raw
+        assert yielded[1].score.win_probability_p1 == 0.62
+        assert yielded[2].model is None
+
+    def test_default_mint_carries_no_model_fields(self, monkeypatch):
+        _, _, seen = run_push(monkeypatch, messages=[json.dumps(self.LEGACY)])
+        assert "model_fields" not in str(seen[0].url)
+
+    def test_model_fields_false_mints_off_and_subscribes_the_named_score_only_slate(self, monkeypatch):
+        off_frame = pub(
+            "slate:score_only", {"type": "score", "match_id": 18953, "model": "off", "score": {"sequence": 104}}
+        )
+        yielded, fake, seen = run_push(
+            monkeypatch,
+            messages=[json.dumps(off_frame)],
+            mint=httpx.Response(200, json=self.OFF_TOKEN_BODY),
+            model_fields=False,
+        )
+        assert str(seen[0].url).endswith("/ws-token?model_fields=off")
+        subscribed = [json.loads(s)["subscribe"]["channel"] for s in fake.sent if "subscribe" in json.loads(s)]
+        assert subscribed == ["slate:score_only"]
+        assert len(yielded) == 1
+        assert yielded[0].model_state == "off"
+        assert "win_probability_p1" not in yielded[0].score.raw
+
+    def test_model_fields_false_with_match_ids_uses_the_score_only_template(self, monkeypatch):
+        _, fake, _ = run_push(
+            monkeypatch,
+            replies=handshake_replies(2),
+            mint=httpx.Response(200, json=self.OFF_TOKEN_BODY),
+            match_ids=[7, 8],
+            model_fields=False,
+        )
+        subscribed = [json.loads(s)["subscribe"]["channel"] for s in fake.sent if "subscribe" in json.loads(s)]
+        assert subscribed == ["match:7:score_only", "match:8:score_only"]
+
+    def test_the_echo_is_readable_on_the_token(self):
+        from livetennisapi import WSToken
+
+        token = WSToken.from_dict(self.OFF_TOKEN_BODY)
+        assert token.model_fields == "off"
+        assert token.slate_channel == "slate:score_only"
+        assert token.match_channel(7) == "match:7:score_only"
+        assert WSToken.from_dict(TOKEN_BODY).model_fields is None
