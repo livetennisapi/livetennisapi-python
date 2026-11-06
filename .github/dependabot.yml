@@ -6,6 +6,9 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: pip
     directory: "/"
@@ -13,3 +16,6 @@ updates:
       interval: weekly
     commit-message:
       prefix: "deps"
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
