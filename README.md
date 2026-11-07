@@ -237,6 +237,90 @@ Check `frame.pbp_coverage` (`point` | `game`) and `frame.quality` (`clean` |
 `PushStream` the same frames arrive with `points=True` — see above, including
 the resume machinery the push side adds.
 
+### Your own socket: order points, fill gaps, apply withdrawals
+
+`LiveScoreStream` is synchronous and yields scores, signals and points. If you
+run your own socket (asyncio, say) or take the same frames as webhooks,
+`livetennisapi.reconcile` does the bookkeeping without any I/O:
+
+- `parse_frame(message)` turns text, bytes or a dict into a typed frame, and
+  raises `FrameError` on bad JSON or a message with no `type`.
+- `PointSequencer` drops repeated `point` frames, holds frames that arrive
+  after a missing one, and gives you the range to fetch: `gap.after_seq` goes
+  straight into `get_match_points(match_id, after_seq=...)`, which reads
+  `GET /matches/{matchId}/points`. Pass the page
+  to `fill()` and the held points come out in `seq` order, each one once.
+- `ScoreBook` keeps the newest score per match by its `sequence`. On a
+  `score_withdrawn` frame it drops a `withdrawn` or `withheld` state, and
+  flags a `deferred` one through `verdict()`.
+
+Point frames are sent once and never replayed, so a dropped frame stays lost
+until you fetch it. Each match's `seq` starts at 1 and never skips, so a jump
+means points are missing. A runnable example (ULTRA key in
+`LIVETENNISAPI_KEY`, `pip install "livetennisapi[ws]"`):
+
+```python
+import asyncio
+
+import websockets
+
+from livetennisapi import AsyncLiveTennisAPI, LiveScoreStream, PointUpdate
+from livetennisapi.reconcile import ControlFrame, FrameError, PointSequencer, ScoreBook, parse_frame
+
+
+async def main() -> None:
+    points, scores = PointSequencer(), ScoreBook()
+    url = LiveScoreStream().url  # the /ws address with your key; nothing connects yet
+    async with AsyncLiveTennisAPI() as client, websockets.connect(url) as ws:
+        await ws.send('{"topics": ["live-scores"], "signals": ["points"]}')
+        async for message in ws:
+            try:
+                frame = parse_frame(message)
+            except FrameError as exc:
+                print("skipped a bad frame:", exc)
+                continue
+
+            if isinstance(frame, PointUpdate):
+                ready = points.add(frame)
+                gap = points.gap(frame.match_id)
+                while gap is not None:
+                    print(f"match {gap.match_id}: fetching points {gap.after_seq + 1}-{gap.before_seq - 1}")
+                    page = await client.get_match_points(gap.match_id, after_seq=gap.after_seq)
+                    if page is None:
+                        break
+                    try:
+                        ready += points.fill(gap.match_id, page)
+                    except ValueError:  # the match finished and is served on another basis
+                        points.forget(gap.match_id)
+                        break
+                    if not page.has_more:
+                        break
+                    gap = points.gap(gap.match_id)
+                for p in ready:
+                    print(f"match {p.match_id} point {p.point.seq}: won by p{p.point.winner}")
+
+            elif scores.apply(frame):
+                current = scores.get(frame.match_id)
+                if current is None:
+                    print(f"match {frame.match_id}: score taken back, waiting for the next one")
+                else:
+                    print(f"match {frame.match_id}: sets {current.score.sets}")
+
+            elif isinstance(frame, ControlFrame) and frame.type == "error":
+                print("the feed refused us:", frame.raw)
+                break
+
+
+asyncio.run(main())
+```
+
+After a reconnect, catch up each match you were following before reading
+live frames again: `for match_id, last in points.cursors.items()`, fetch
+`after_seq=last` and pass each page to `fill()`. A page with `has_more`
+true means there is more to fetch. `seq` is the order points were stored,
+which is not always the order they were played. Sort by
+`(set, game, number)` to replay a match.
+
 ### Model fields ride the WebSocket too
 
 Score frames carry the same ULTRA model fields as REST — `update.score.win_probability_p1`
