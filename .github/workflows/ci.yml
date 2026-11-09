@@ -17,8 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        python: ['3.10', '3.11', '3.12', '3.13']
         include:
+          # ubuntu-latest is Ubuntu 26.04 now, and actions/python-versions
+          # only builds 3.9 for 22.04 and 24.04. Keep the 3.9 floor on 24.04.
+          - os: ubuntu-24.04
+            python: '3.9'
           # Spot-check the other platforms on one version rather than a full
           # matrix — this is a pure-Python HTTP client, so OS risk is low.
           - os: macos-latest
