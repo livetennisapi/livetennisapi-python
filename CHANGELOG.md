@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`livetennisapi.reconcile`**, for anyone reading the live feed on their own
+  socket or through webhooks. No I/O and no new dependency.
+  `parse_frame()` turns a message into a typed frame (`score`, `point`,
+  `point_update`, `score_withdrawn`, the break-point pair, everything else as
+  `ControlFrame`) and raises `FrameError` on bad JSON. `PointSequencer` drops
+  repeated point frames and holds the ones that arrive after a missing point.
+  It reports the `after_seq` to fetch from `get_match_points()` and releases
+  points in `seq` order once a page fills the gap. `ScoreBook` keeps the
+  newest score per match and applies `score_withdrawn`: `withdrawn` and
+  `withheld` drop the state, `deferred` keeps it and flags it.
+
 ## [1.8.0] — 2026-09-02
 
 ### Added
