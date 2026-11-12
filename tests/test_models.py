@@ -186,6 +186,51 @@ class TestFixture:
         assert fixture.player2_id is None
         assert fixture.round_code == "QF"
 
+    def test_reason_match_id_and_gender(self):
+        fixture = Fixture.from_dict(
+            {"id": 1, "status": "cancelled", "reason": "walkover", "match_id": 48213, "gender": "women"}
+        )
+        assert fixture.reason == "walkover"
+        assert fixture.match_id == 48213
+        assert fixture.gender == "women"
+
+    def test_reason_match_id_and_gender_are_nullable(self):
+        # No match row yet, a mixed event, a fixture that was played out: all null.
+        fixture = Fixture.from_dict({"id": 1, "reason": None, "match_id": None, "gender": None})
+        assert fixture.reason is None
+        assert fixture.match_id is None
+        assert fixture.gender is None
+
+    def test_is_qualifying_is_three_valued(self):
+        # None means never stated, and None is not False.
+        assert Fixture.from_dict({"id": 1, "is_qualifying": True}).is_qualifying is True
+        assert Fixture.from_dict({"id": 1, "is_qualifying": False}).is_qualifying is False
+        assert Fixture.from_dict({"id": 1, "is_qualifying": None}).is_qualifying is None
+        assert Fixture.from_dict({"id": 1}).is_qualifying is None
+
+    def test_created_at_and_updated_at_are_parsed(self):
+        fixture = Fixture.from_dict(
+            {"id": 1, "created_at": "2026-09-23T08:00:00Z", "updated_at": "2026-09-24T10:30:00Z"}
+        )
+        assert isinstance(fixture.created_at, datetime)
+        assert isinstance(fixture.updated_at, datetime)
+        assert fixture.created_at.tzinfo is not None
+        assert fixture.updated_at > fixture.created_at
+        nulls = Fixture.from_dict({"id": 1, "created_at": None, "updated_at": None})
+        assert nulls.created_at is None
+        assert nulls.updated_at is None
+
+    def test_pregame_forecasts_present(self):
+        # ULTRA only: the bound match's pregame forecasts, oldest first.
+        forecast = {"win_probability_p1": 0.61, "stage": "pregame", "created_at": "2026-09-24T07:00:00Z"}
+        fixture = Fixture.from_dict({"id": 1, "match_id": 48213, "pregame_forecasts": [forecast]})
+        assert fixture.pregame_forecasts == [forecast]
+        assert Fixture.from_dict({"id": 1, "pregame_forecasts": []}).pregame_forecasts == []
+
+    def test_pregame_forecasts_absent_means_none(self):
+        # The field is absent below ULTRA: None, never a guessed empty list.
+        assert Fixture.from_dict({"id": 1}).pregame_forecasts is None
+
 
 class TestMatchNewFields:
     def test_tour_and_tournament_id(self):
@@ -235,6 +280,20 @@ class TestMatchNewFields:
         match = Match.from_dict({"id": 1})
         assert match.has_analysis is None
         assert match.has_market is None
+
+    def test_is_qualifying_is_three_valued(self):
+        # None means never stated, and None is not False.
+        assert Match.from_dict({"id": 1, "is_qualifying": True}).is_qualifying is True
+        assert Match.from_dict({"id": 1, "is_qualifying": False}).is_qualifying is False
+        assert Match.from_dict({"id": 1, "is_qualifying": None}).is_qualifying is None
+        assert Match.from_dict({"id": 1}).is_qualifying is None
+
+    def test_pregame_forecasts_present_and_absent(self):
+        # ULTRA only, on upcoming list rows. Absent everywhere else: None, never [].
+        forecast = {"win_probability_p1": 0.58, "stage": "pregame"}
+        assert Match.from_dict({"id": 1, "pregame_forecasts": [forecast]}).pregame_forecasts == [forecast]
+        assert Match.from_dict({"id": 1, "pregame_forecasts": []}).pregame_forecasts == []
+        assert Match.from_dict({"id": 1}).pregame_forecasts is None
 
     def test_draw_is_three_valued(self):
         assert Match.from_dict({"id": 1, "draw": "singles"}).draw == "singles"
