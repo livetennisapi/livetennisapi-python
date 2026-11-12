@@ -285,7 +285,7 @@ class Fixture(Model):
     """
 
     _date_fields: ClassVar[tuple[str, ...]] = ("event_date",)
-    _datetime_fields: ClassVar[tuple[str, ...]] = ("start_time",)
+    _datetime_fields: ClassVar[tuple[str, ...]] = ("start_time", "created_at", "updated_at")
 
     id: int | None = None
     event_date: date | None = None
@@ -301,6 +301,37 @@ class Fixture(Model):
     player1_name: str | None = None
     player2_name: str | None = None
     status: str | None = None
+    #: Why a fixture ended without being played out: ``walkover`` |
+    #: ``retired`` | ``cancelled`` | ``default`` | ``postponed``. ``status``
+    #: folds the first four into ``cancelled``; this field names which one.
+    #: ``None`` on a scheduled, live or finished fixture.
+    reason: str | None = None
+    #: The ``id`` of the match this fixture became, which every match method
+    #: accepts. ``None`` while no match exists yet — a fixture can publish
+    #: days before its match. Set when found and never cleared.
+    match_id: int | None = None
+    #: ``men`` | ``women`` — the same vocabulary as the ``gender=`` filter.
+    #: ``None`` for mixed doubles and mixed team events.
+    gender: str | None = None
+    #: Whether the fixture is in the qualifying draw. Three-valued like
+    #: :attr:`Match.is_qualifying`: ``None`` means never stated, and ``None``
+    #: is not ``False``. The qualifying draw is published under the main
+    #: draw's tournament name, so group a schedule on ``round_code`` and this
+    #: flag together.
+    is_qualifying: bool | None = None
+    #: When this row first existed, UTC. A ``created_at`` inside your polling
+    #: window is a new row.
+    created_at: datetime | None = None
+    #: When this row last changed, UTC. A moved ``updated_at`` with
+    #: ``created_at`` unchanged is a change to a row you already hold, such as
+    #: a re-listed start time.
+    updated_at: datetime | None = None
+    #: *(ULTRA only)* the bound match's ``stage: pregame`` forecasts, oldest
+    #: first, each in the :attr:`Analysis.profile` shape. ``[]`` when the
+    #: fixture has no ``match_id`` yet or no forecast has been written. The
+    #: field is absent below ULTRA, so ``None`` means "not entitled", never
+    #: "no forecast".
+    pregame_forecasts: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -375,6 +406,17 @@ class Match(Model):
     #: no_market``). ``None`` only when talking to a server that predates the
     #: field.
     has_market: bool | None = None
+    #: Whether this match belongs to the qualifying draw. Three-valued:
+    #: ``None`` means never stated, and ``None`` is not ``False``. The
+    #: qualifying draw shares the main draw's tournament name and round
+    #: vocabulary, so branch on ``round_code`` and this flag together.
+    is_qualifying: bool | None = None
+    #: *(ULTRA only, ``status="upcoming"`` list rows)* the match's
+    #: ``stage: pregame`` forecasts, oldest first, each in the
+    #: :attr:`Analysis.profile` shape. ``[]`` when none has been written yet.
+    #: The field is absent below ULTRA and on other statuses, so ``None``
+    #: means "not sent", never "no forecast".
+    pregame_forecasts: list[dict[str, Any]] | None = None
     market: Market | None = None
     analysis: Analysis | None = None
 
